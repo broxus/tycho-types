@@ -1,13 +1,12 @@
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::hash::Hash;
 use std::num::NonZeroU8;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 use super::error::{ParseAbiTypeError, ParseNamedAbiTypeError};
-use crate::abi::WithoutName;
+use crate::abi::{AbiVersion, WithoutName};
 use crate::cell::{CellTreeStats, MAX_BIT_LEN, MAX_REF_COUNT};
 use crate::models::{IntAddr, StdAddr};
 use crate::num::Tokens;
@@ -306,6 +305,8 @@ pub enum AbiType {
     ///
     /// [`IntAddr`]: crate::models::message::IntAddr
     Address,
+    /// Standard internal address.
+    AddressStd,
     /// Byte array.
     Bytes,
     /// Byte array of fixed length.
@@ -351,7 +352,7 @@ impl AbiType {
     }
 
     /// Returns the maximum number of bits and refs that this type can occupy.
-    pub fn max_size(&self) -> CellTreeStats {
+    pub fn max_size(&self, abi_version: AbiVersion) -> CellTreeStats {
         match self {
             Self::Uint(n) | Self::Int(n) => CellTreeStats {
                 bit_count: *n as _,
@@ -369,6 +370,11 @@ impl AbiType {
                 bit_count: 1,
                 cell_count: 0,
             },
+
+            Self::FixedBytes(bytes) if abi_version >= AbiVersion::V2_4 => CellTreeStats {
+                bit_count: *bytes as u64 * 8,
+                cell_count: 0,
+            },
             Self::Cell | Self::Bytes | Self::FixedBytes(_) | Self::String | Self::Ref(_) => {
                 CellTreeStats {
                     bit_count: 0,
@@ -378,6 +384,10 @@ impl AbiType {
             Self::Address => CellTreeStats {
                 bit_count: IntAddr::BITS_MAX as _,
                 cell_count: 0,
+            },
+            Self::AddressStd => CellTreeStats {
+                bit_count: StdAddr::BITS_MAX as _,
+                cell_count: 0
             },
             Self::Token => CellTreeStats {
                 bit_count: Tokens::MAX_BITS as _,
@@ -392,7 +402,7 @@ impl AbiType {
                 cell_count: 1,
             },
             Self::Optional(ty) => {
-                let ty_size = ty.max_size();
+                let ty_size = ty.max_size(abi_version);
                 if ty_size.bit_count < MAX_BIT_LEN as u64
                     && ty_size.cell_count < MAX_REF_COUNT as u64
                 {
@@ -407,18 +417,18 @@ impl AbiType {
                     }
                 }
             }
-            Self::Tuple(items) => items.iter().map(|item| item.ty.max_size()).sum(),
+            Self::Tuple(items) => items.iter().map(|item| item.ty.max_size(abi_version)).sum(),
         }
     }
 
     /// Returns the maximum number of bits that this type can occupy.
-    pub fn max_bits(&self) -> usize {
-        self.max_size().bit_count as usize
+    pub fn max_bits(&self, abi_version: AbiVersion) -> usize {
+        self.max_size(abi_version).bit_count as usize
     }
 
     /// Returns the maximum number of cells that this type can occupy.
-    pub fn max_refs(&self) -> usize {
-        self.max_size().cell_count as usize
+    pub fn max_refs(&self, abi_version: AbiVersion) -> usize {
+        self.max_size(abi_version).cell_count as usize
     }
 
     fn components(&self) -> Option<&[NamedAbiType]> {
@@ -433,7 +443,7 @@ impl AbiType {
         }
     }
 
-    fn components_mut(&mut self) -> Option<&mut Arc<[NamedAbiType]>> {
+    pub(crate) fn components_mut(&mut self) -> Option<&mut Arc<[NamedAbiType]>> {
         match self {
             Self::Tuple(types) => Some(types),
             Self::Array(ty) => Arc::make_mut(ty).components_mut(),
@@ -545,7 +555,7 @@ impl AbiType {
         Self::Ref(Arc::<AbiType>::from(ty))
     }
 
-    fn from_simple_str(s: &str) -> Result<Self, ParseAbiTypeError> {
+    pub(crate) fn from_simple_str(s: &str) -> Result<Self, ParseAbiTypeError> {
         if let Some(arr_ty) = s.strip_suffix(']') {
             let (ty, len) = ok!(arr_ty
                 .rsplit_once('[')
@@ -570,6 +580,7 @@ impl AbiType {
             "bool" => Self::Bool,
             "cell" => Self::Cell,
             "address" => Self::Address,
+            "address_std" => Self::AddressStd,
             "bytes" => Self::Bytes,
             "string" => Self::String,
             "gram" | "token" => Self::Token,
@@ -648,6 +659,7 @@ impl std::fmt::Display for AbiType {
             Self::Bool => "bool",
             Self::Cell => "cell",
             Self::Address => "address",
+            Self::AddressStd => "address_std",
             Self::Bytes => "bytes",
             Self::FixedBytes(n) => return write!(f, "fixedbytes{n}"),
             Self::String => "string",
@@ -706,6 +718,7 @@ impl PartialEq for WithoutName<AbiType> {
             (AbiType::Bool, AbiType::Bool) => true,
             (AbiType::Cell, AbiType::Cell) => true,
             (AbiType::Address, AbiType::Address) => true,
+            (AbiType::AddressStd, AbiType::AddressStd) => true,
             (AbiType::Bytes, AbiType::Bytes) => true,
             (AbiType::FixedBytes(a), AbiType::FixedBytes(b)) => a.eq(b),
             (AbiType::String, AbiType::String) => true,
@@ -744,6 +757,7 @@ impl Hash for WithoutName<AbiType> {
             AbiType::Bool => {}
             AbiType::Cell => {}
             AbiType::Address => {}
+            AbiType::AddressStd => {}
             AbiType::Bytes => {}
             AbiType::FixedBytes(x) => x.hash(state),
             AbiType::String => {}

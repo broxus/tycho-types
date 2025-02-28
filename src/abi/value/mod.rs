@@ -10,7 +10,7 @@ use super::ty::*;
 use super::{IntoAbi, IntoPlainAbi, WithAbiType, WithPlainAbiType, WithoutName};
 use crate::abi::error::AbiError;
 use crate::cell::{Cell, CellFamily};
-use crate::models::IntAddr;
+use crate::models::{AnyAddr, IntAddr, StdAddr};
 use crate::num::Tokens;
 
 mod de;
@@ -133,10 +133,13 @@ pub enum AbiValue {
     ///
     /// [`Cell`]: crate::cell::Cell
     Cell(Cell),
-    /// Internal address ([`IntAddr`]).
+    /// Any address ([`AnyAddr`]).
     ///
-    /// [`IntAddr`]: crate::models::message::IntAddr
-    Address(Box<IntAddr>),
+    /// [`AnyAddr`]: crate::models::message::AnyAddr
+    Address(Box<AnyAddr>),
+    /// Standard internal address ([`StdAddr`])
+    /// [`StdAddr`]: crate::models::message::StdAddr
+    AddressStd(Box<Option<StdAddr>>),
     /// Byte array.
     Bytes(Bytes),
     /// Byte array of fixed length.
@@ -223,6 +226,7 @@ impl AbiValue {
             AbiValue::Bool(_) => AbiType::Bool,
             AbiValue::Cell(_) => AbiType::Cell,
             AbiValue::Address(_) => AbiType::Address,
+            AbiValue::AddressStd(_) => AbiType::AddressStd,
             AbiValue::Bytes(_) => AbiType::Bytes,
             AbiValue::FixedBytes(bytes) => AbiType::FixedBytes(bytes.len()),
             AbiValue::String(_) => AbiType::String,
@@ -287,9 +291,9 @@ impl AbiValue {
     #[inline]
     pub fn address<T>(value: T) -> Self
     where
-        IntAddr: From<T>,
+        AnyAddr: From<T>,
     {
-        Self::Address(Box::new(IntAddr::from(value)))
+        Self::Address(Box::new(AnyAddr::from(value)))
     }
 
     /// Simple `bytes` constructor.
@@ -412,6 +416,7 @@ impl AbiType {
             AbiType::Bool => AbiValue::Bool(false),
             AbiType::Cell => AbiValue::Cell(Cell::empty_cell()),
             AbiType::Address => AbiValue::Address(Box::default()),
+            AbiType::AddressStd => AbiValue::AddressStd(Box::default()),
             AbiType::Bytes => AbiValue::Bytes(Bytes::default()),
             AbiType::FixedBytes(len) => AbiValue::FixedBytes(Bytes::from(vec![0u8; *len])),
             AbiType::String => AbiValue::String(String::default()),
@@ -518,7 +523,13 @@ impl From<PlainAbiValue> for AbiValue {
             PlainAbiValue::Uint(n, value) => Self::Uint(n, value),
             PlainAbiValue::Int(n, value) => Self::Int(n, value),
             PlainAbiValue::Bool(value) => Self::Bool(value),
-            PlainAbiValue::Address(value) => Self::Address(value),
+            PlainAbiValue::Address(value) => {
+                let addr = match value.as_ref() {
+                    IntAddr::Std(addr) => AnyAddr::Std(addr.clone()),
+                    IntAddr::Var(addr) => AnyAddr::Var(addr.clone()),
+                };
+                AbiValue::Address(Box::new(addr))
+            }
         }
     }
 }
@@ -589,6 +600,7 @@ impl std::fmt::Display for DisplayValueType<'_> {
             AbiValue::Bool(_) => "bool",
             AbiValue::Cell(_) => "cell",
             AbiValue::Address(_) => "address",
+            AbiValue::AddressStd(_) => "address_std",
             AbiValue::Bytes(_) => "bytes",
             AbiValue::FixedBytes(bytes) => return write!(f, "fixedbytes{}", bytes.len()),
             AbiValue::String(_) => "string",

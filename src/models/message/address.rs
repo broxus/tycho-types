@@ -3,6 +3,7 @@ use std::str::FromStr;
 use crate::cell::*;
 use crate::error::{Error, ParseAddrError};
 use crate::models::block::ShardIdent;
+use crate::models::message::{load_ext_addr, store_ext_addr};
 use crate::num::*;
 use crate::util::*;
 
@@ -12,6 +13,114 @@ pub trait Addr {
     fn workchain(&self) -> i32;
     /// Returns the high bits of the address as a number.
     fn prefix(&self) -> u64;
+}
+
+/// Any possible address of specification
+#[derive(Default, Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub enum AnyAddr {
+    /// Empty address. 2 zero bits
+    #[default]
+    None,
+    /// External address
+    Ext(ExtAddr),
+    /// Standard internal address
+    Std(StdAddr),
+    /// Variable-length internal address
+    Var(VarAddr),
+}
+
+impl AnyAddr {
+    /// Returns the number of data bits that this struct occupies.
+    pub fn bit_len(&self) -> u16 {
+        match self {
+            AnyAddr::None => 2, //2 bits of zeroes
+            AnyAddr::Ext(addr) => addr.bit_len(),
+            AnyAddr::Std(addr) => addr.bit_len(),
+            AnyAddr::Var(addr) => addr.bit_len(),
+        }
+    }
+}
+
+impl Store for AnyAddr {
+    fn store_into(
+        &self,
+        builder: &mut CellBuilder,
+        context: &dyn CellContext,
+    ) -> Result<(), Error> {
+        match self {
+            Self::None => store_ext_addr(builder, context, &None),
+            Self::Std(addr) => addr.store_into(builder, context),
+            Self::Var(addr) => addr.store_into(builder, context),
+            Self::Ext(addr) => store_ext_addr(builder, context, &Some(addr.clone())),
+        }
+    }
+}
+
+impl<'a> Load<'a> for AnyAddr {
+    fn load_from(slice: &mut CellSlice<'a>) -> Result<Self, Error> {
+        let addr = if ok!(slice.get_bit(0)) {
+            let addr = ok!(IntAddr::load_from(slice));
+            match addr {
+                IntAddr::Std(addr) => Self::Std(addr),
+                IntAddr::Var(addr) => Self::Var(addr),
+            }
+        } else {
+            match ok!(load_ext_addr(slice)) {
+                Some(addr) => Self::Ext(addr),
+                None => Self::None,
+            }
+        };
+
+        Ok(addr)
+    }
+}
+
+// for all
+impl From<Option<ExtAddr>> for AnyAddr {
+    fn from(value: Option<ExtAddr>) -> Self {
+        if let Some(addr) = value {
+            AnyAddr::Ext(addr)
+        } else {
+            AnyAddr::None
+        }
+    }
+}
+
+impl From<Option<IntAddr>> for AnyAddr {
+    fn from(value: Option<IntAddr>) -> Self {
+        match value {
+            Some(IntAddr::Std(addr)) => AnyAddr::Std(addr),
+            Some(IntAddr::Var(addr)) => AnyAddr::Var(addr),
+            None => AnyAddr::None,
+        }
+    }
+}
+
+impl From<IntAddr> for AnyAddr {
+    fn from(value: IntAddr) -> Self {
+        match value {
+            IntAddr::Std(addr) => AnyAddr::Std(addr),
+            IntAddr::Var(addr) => AnyAddr::Var(addr),
+        }
+    }
+}
+
+impl From<ExtAddr> for AnyAddr {
+    fn from(value: ExtAddr) -> Self {
+        AnyAddr::Ext(value)
+    }
+}
+
+impl From<StdAddr> for AnyAddr {
+    fn from(value: StdAddr) -> Self {
+        AnyAddr::Std(value)
+    }
+}
+
+impl From<VarAddr> for AnyAddr {
+    fn from(value: VarAddr) -> Self {
+        AnyAddr::Var(value)
+    }
 }
 
 /// Internal message address.
