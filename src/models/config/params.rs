@@ -807,10 +807,10 @@ pub struct WorkUnitsParamsPrepare {
 ///     execute:uint16
 ///     execute_err:uint16
 ///     execute_delimiter:uint32
-///     serialize_enqueue:uint16
-///     serialize_dequeue:uint16
-///     insert_new_msgs:uint16
-///     subgroup_size:uint16
+///     insert_in_msg:uint16
+///     insert_out_msg:uint16
+///     insert_new_msg:uint16
+///     max_threads:uint16
 ///     = WorkUnitsParamsExecute;
 /// ```
 #[cfg(feature = "tycho")]
@@ -818,22 +818,23 @@ pub struct WorkUnitsParamsPrepare {
 #[tlb(tag = "#00")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorkUnitsParamsExecute {
-    /// TODO: Add docs.
+    /// Fixed wu to prepare the execution of one message list
+    /// on one account during the execution of a group
     pub prepare: u32,
-    /// TODO: Add docs.
+    /// Wu price for gas consumed in VM
     pub execute: u16,
     /// TODO: Add docs.
     pub execute_err: u16,
-    /// TODO: Add docs.
+    /// Delimiter to get a fractional value of `execute` param
     pub execute_delimiter: u32,
-    /// TODO: Add docs.
-    pub serialize_enqueue: u16,
-    /// TODO: Add docs.
-    pub serialize_dequeue: u16,
-    /// TODO: Add docs.
-    pub insert_new_msgs: u16,
-    /// TODO: Add docs.
-    pub subgroup_size: u16,
+    /// Used to calculate wu for inserting into InMsgs map
+    pub insert_in_msg: u16,
+    /// Used to calculate wu for inserting into OutMsgs map
+    pub insert_out_msg: u16,
+    /// Used to calculate wu for inserting into new messages cache
+    pub insert_new_msg: u16,
+    /// Thread count to calculate wu for operations executed in parallel
+    pub max_threads: u16,
 }
 
 /// Params to calculate block finalization work in wu.
@@ -849,11 +850,11 @@ pub struct WorkUnitsParamsExecute {
 ///     serialize_msg:uint16
 ///     state_update_min:uint32
 ///     state_update_accounts:uint16
-///     state_update_msg:uint16
+///     state_pow_coeff:uint16
 ///     create_diff:uint16
-///     serialize_diff:uint16
+///     updated_accounts_pow_coeff:uint16
 ///     apply_diff:uint16
-///     diff_tail_len:uint16
+///     resume_collation:uint16
 ///     = WorkUnitsParamsFinalize;
 /// ```
 #[cfg(feature = "tycho")]
@@ -861,34 +862,36 @@ pub struct WorkUnitsParamsExecute {
 #[tlb(tag = "#00")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorkUnitsParamsFinalize {
-    /// TODO: Add docs.
+    /// Used to calculate wu for building accounts blocks description
     pub build_transactions: u16,
-    /// TODO: Add docs.
+    /// Used to calculate wu for updating shard accounts
     pub build_accounts: u16,
-    /// TODO: Add docs.
+    /// Used to calculate wu for building in messages description
     pub build_in_msg: u16,
-    /// TODO: Add docs.
+    /// Used to calculate wu for building out messages description
     pub build_out_msg: u16,
-    /// TODO: Add docs.
+    /// Minimal wu for block serialization
     pub serialize_min: u32,
-    /// TODO: Add docs.
+    /// Used to calculate wu for serialization of accounts blocks
     pub serialize_accounts: u16,
-    /// TODO: Add docs.
+    /// Used to calculate wu for serialization of in and out messages
     pub serialize_msg: u16,
-    /// TODO: Add docs.
+    /// Minimal wu for building state update (Merkle)
     pub state_update_min: u32,
-    /// TODO: Add docs.
+    /// Used to calculate wu for building state update (Merkle)
     pub state_update_accounts: u16,
-    /// TODO: Add docs.
-    pub state_update_msg: u16,
-    /// TODO: Add docs.
+    /// Power coeff to calculate shard accounts count related wu.
+    /// Packed: numerator * 100 + denominator
+    pub state_pow_coeff: u16,
+    /// Used to calculate wu for creating queue diff
     pub create_diff: u16,
-    /// TODO: Add docs.
-    pub serialize_diff: u16,
-    /// TODO: Add docs.
+    /// Power coeff to calculate updated accounts count related wu.
+    /// Packed: numerator * 100 + denominator
+    pub updated_accounts_pow_coeff: u16,
+    /// Used to calculate wu for applying queue diff
     pub apply_diff: u16,
-    /// TODO: Add docs.
-    pub diff_tail_len: u16,
+    /// Used to calculate wu for resuming collation after master block
+    pub resume_collation: u16,
 }
 
 /// DAG Consensus configuration params
