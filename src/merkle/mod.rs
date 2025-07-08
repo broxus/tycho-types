@@ -9,6 +9,8 @@ pub use self::update::{MerkleUpdate, MerkleUpdateBuilder};
 use crate::cell::{HashBytes, UsageTree, UsageTreeWithSubtrees};
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
+mod ext_cell;
+#[cfg(all(feature = "rayon", feature = "sync"))]
 mod promise;
 mod proof;
 mod pruned_branch;

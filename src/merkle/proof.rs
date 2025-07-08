@@ -2,6 +2,8 @@
 use std::sync::Arc;
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
+use super::ext_cell::{CellParts as ExtCellParts, ChildrenBuilder, ExtCell, resolve_ext_cell};
+#[cfg(all(feature = "rayon", feature = "sync"))]
 use super::promise::Promise;
 use super::{FilterAction, MerkleFilter, make_pruned_branch};
 use crate::cell::*;
@@ -577,32 +579,6 @@ struct ParBuilderImpl<'a, 'b, 'c: 'a> {
 #[cfg(all(feature = "rayon", feature = "sync"))]
 impl<'a> ParBuilderImpl<'a, '_, '_> {
     fn build(&self) -> Result<Cell, Error> {
-        fn finalize(
-            mut cell: ExtCell,
-            context: &(dyn CellContext + Send + Sync),
-        ) -> Result<Cell, Error> {
-            loop {
-                match cell {
-                    ExtCell::Ordinary(cell) => return Ok(cell),
-                    ExtCell::Partial(parts) => {
-                        let parts = Arc::unwrap_or_clone(parts);
-
-                        let mut refs = CellRefsBuilder::default();
-                        for child in parts.refs {
-                            let cell = finalize(child, context)?;
-                            refs.store_reference(cell)?;
-                        }
-
-                        return CellBuilder::from_parts(parts.is_exotic, parts.data.clone(), refs)
-                            .build_ext(context);
-                    }
-                    ExtCell::Deferred(promise) => {
-                        cell = ok!(promise.wait_cloned());
-                    }
-                }
-            }
-        }
-
         if !self.allow_different_root
             && self.filter.check(self.root.repr_hash()) == FilterAction::Skip
         {
@@ -613,7 +589,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
         loop {
             match root_cell {
                 ExtCell::Ordinary(cell) => break Ok(cell),
-                root_cell @ ExtCell::Partial(_) => break finalize(root_cell, self.context),
+                root_cell @ ExtCell::Partial(_) => break resolve_ext_cell(root_cell, self.context),
                 ExtCell::Deferred(rx) => {
                     root_cell = ok!(rx.wait_cloned());
                 }
@@ -632,45 +608,6 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
             descriptor: CellDescriptor,
             merkle_depth: u8,
             children: ChildrenBuilder,
-        }
-
-        enum ChildrenBuilder {
-            Ordinary(CellRefsBuilder),
-            Extended(Vec<ExtCell>),
-        }
-
-        impl ChildrenBuilder {
-            fn store_reference(&mut self, cell: ExtCell) -> Result<(), Error> {
-                match (&mut *self, cell) {
-                    (Self::Ordinary(builder), ExtCell::Ordinary(cell)) => {
-                        builder.store_reference(cell)
-                    }
-                    (Self::Ordinary(builder), cell) => {
-                        let capacity = builder.len() + 1;
-                        let Self::Ordinary(builder) =
-                            std::mem::replace(self, Self::Extended(Vec::with_capacity(capacity)))
-                        else {
-                            // SAFETY: We have just checked the `self` discriminant.
-                            unsafe { std::hint::unreachable_unchecked() }
-                        };
-
-                        let Self::Extended(ext_builder) = self else {
-                            // SAFETY: We have just updated the `self` with this value.
-                            unsafe { std::hint::unreachable_unchecked() }
-                        };
-
-                        for cell in builder {
-                            ext_builder.push(ExtCell::Ordinary(cell.clone()));
-                        }
-                        ext_builder.push(cell);
-                        Ok(())
-                    }
-                    (Self::Extended(builder), cell) => {
-                        builder.push(cell);
-                        Ok(())
-                    }
-                }
-            }
         }
 
         let mut stack = Vec::with_capacity((child.repr_depth() as usize).min(MAX_OK_DEPTH));
@@ -777,7 +714,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                     ChildrenBuilder::Extended(refs) => {
                         let mut builder = CellDataBuilder::new();
                         builder.store_cell_data(cell)?;
-                        ExtCell::Partial(Arc::new(CellParts {
+                        ExtCell::Partial(Arc::new(ExtCellParts {
                             data: builder,
                             is_exotic: last.descriptor.is_exotic(),
                             refs,
@@ -802,22 +739,6 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
         // Something is wrong if we are here
         Err(Error::EmptyProof)
     }
-}
-
-#[cfg(all(feature = "rayon", feature = "sync"))]
-#[derive(Clone)]
-enum ExtCell {
-    Ordinary(Cell),
-    Partial(Arc<CellParts>),
-    Deferred(Promise<Result<ExtCell, Error>>),
-}
-
-#[cfg(all(feature = "rayon", feature = "sync"))]
-#[derive(Clone)]
-struct CellParts {
-    data: CellDataBuilder,
-    is_exotic: bool,
-    refs: Vec<ExtCell>,
 }
 
 #[cold]
