@@ -39,9 +39,7 @@ impl Container {
                     }
                 } else {
                     let path = meta.path.to_token_stream().to_string().replace(' ', "");
-                    return Err(
-                        meta.error(format_args!("unknown TLB container attribute `{}`", path))
-                    );
+                    return Err(meta.error(format!("unknown TLB container attribute `{path}`")));
                 }
                 Ok(())
             }) {
@@ -73,7 +71,7 @@ impl Variant {
 
             if let Err(e) = attr.parse_nested_meta(|meta| {
                 let path = meta.path.to_token_stream().to_string().replace(' ', "");
-                Err(meta.error(format_args!("unknown tl variant attribute `{}`", path)))
+                Err(meta.error(format!("unknown tl variant attribute `{path}`")))
             }) {
                 cx.syn_error(e);
             }
@@ -110,7 +108,7 @@ impl Field {
                     }
                 } else {
                     let path = meta.path.to_token_stream().to_string().replace(' ', "");
-                    return Err(meta.error(format_args!("unknown tl field attribute `{}`", path)));
+                    return Err(meta.error(format!("unknown tl field attribute `{path}`")));
                 }
                 Ok(())
             }) {
@@ -225,10 +223,7 @@ fn parse_number(
     } else {
         cx.error_spanned_by(
             value,
-            format!(
-                "expected {} attribute to be a number: `{} = \"...\"`",
-                attr_name, attr_name
-            ),
+            format!("expected {attr_name} attribute to be a number: `{attr_name} = \"...\"`"),
         );
         Ok(None)
     }
@@ -278,17 +273,14 @@ fn get_lit_str2(
         if !suffix.is_empty() {
             cx.error_spanned_by(
                 lit,
-                format!("unexpected suffix `{}` on string literal", suffix),
+                format!("unexpected suffix `{suffix}` on string literal"),
             );
         }
         Some(lit.clone())
     } else {
         cx.error_spanned_by(
             value,
-            format!(
-                "expected {} attribute to be a string: `{} = \"...\"`",
-                attr_name, meta_item_name
-            ),
+            format!("expected {attr_name} attribute to be a string: `{meta_item_name} = \"...\"`"),
         );
         None
     }

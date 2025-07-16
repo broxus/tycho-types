@@ -239,5 +239,5 @@ fn serialize_account_prefix<S>(prefix: &u64, serializer: S) -> Result<S::Ok, S::
 where
     S: serde::Serializer,
 {
-    serializer.serialize_str(&format!("{:08x}", prefix))
+    serializer.serialize_str(&format!("{prefix:08x}"))
 }
