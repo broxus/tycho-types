@@ -425,8 +425,7 @@ impl MerkleUpdate {
 
             rayon::scope(|scope| {
                 fn traverse<'a>(
-                    cell: Cell,
-                    cell_ref: &'a DynCell,
+                    (cell_ref, cell): (&'a DynCell, Cell),
                     merkle_depth: u8,
                     traverse_depth: u16,
                     scope: Option<&rayon::Scope<'a>>,
@@ -460,8 +459,7 @@ impl MerkleUpdate {
                             {
                                 scope.spawn(move |_| {
                                     traverse(
-                                        child,
-                                        child_ref,
+                                        (child_ref, child),
                                         next_merkle_depth,
                                         next_traverse_depth,
                                         None,
@@ -473,8 +471,7 @@ impl MerkleUpdate {
                             }
                             _ => {
                                 traverse(
-                                    child,
-                                    child_ref,
+                                    (child_ref, child),
                                     next_merkle_depth,
                                     next_traverse_depth,
                                     scope,
@@ -493,8 +490,7 @@ impl MerkleUpdate {
                 }
 
                 traverse(
-                    old.clone(),
-                    old.virtualize(),
+                    (old.as_ref(), old.clone()),
                     0,
                     0,
                     Some(scope),
@@ -773,14 +769,7 @@ impl MerkleUpdate {
                 );
             }
 
-            traverse_old_cells(
-                self.old.virtualize(),
-                0,
-                0,
-                Some(scope),
-                &visited,
-                &old_cells,
-            );
+            traverse_old_cells(self.old.as_ref(), 0, 0, Some(scope), &visited, &old_cells);
         });
 
         visited.clear();
@@ -793,21 +782,16 @@ impl MerkleUpdate {
                 scope: Option<&rayon::Scope<'a>>,
                 visited: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
                 old_cells: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
-            ) -> Result<(), Error> {
+            ) {
                 if !visited.insert(*cell.repr_hash()) {
-                    return Ok(());
+                    return;
                 }
 
                 let descriptor = cell.descriptor();
 
                 if descriptor.is_pruned_branch() {
                     let level_ok = descriptor.level_mask().level() == merkle_depth + 1;
-
-                    if level_ok && !old_cells.contains(cell.hash(merkle_depth)) {
-                        return Err(Error::InvalidData);
-                    }
-
-                    return Ok(());
+                    debug_assert!(!level_ok || old_cells.contains(cell.hash(merkle_depth)),);
                 }
 
                 let next_merkle_depth = merkle_depth + descriptor.is_merkle() as u8;
@@ -820,7 +804,7 @@ impl MerkleUpdate {
                             if traverse_depth > SPLIT_DEPTH && child.repr_depth() > SPLIT_DEPTH =>
                         {
                             scope.spawn(move |_| {
-                                let res = traverse_new_cells(
+                                traverse_new_cells(
                                     child,
                                     next_merkle_depth,
                                     next_traverse_depth,
@@ -828,7 +812,6 @@ impl MerkleUpdate {
                                     visited,
                                     old_cells,
                                 );
-                                debug_assert!(res.is_ok());
                             });
                         }
                         _ => {
@@ -839,7 +822,7 @@ impl MerkleUpdate {
                                 scope,
                                 visited,
                                 old_cells,
-                            )?;
+                            );
                         }
                     }
                 }
@@ -848,21 +831,19 @@ impl MerkleUpdate {
                     merkle_depth,
                     next_merkle_depth - iter.cell().descriptor().is_merkle() as u8,
                 );
-
-                Ok(())
             }
 
             let merkle_depth = self.new.descriptor().is_merkle() as u8;
 
             traverse_new_cells(
-                self.new.virtualize(),
+                self.new.as_ref(),
                 merkle_depth,
                 0,
                 Some(scope),
                 &visited,
                 &old_cells,
             )
-        })?;
+        });
 
         Ok(old_cells)
     }
@@ -1103,9 +1084,9 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
         }
 
         struct Resolver<'a> {
-            pruned_branches: scc::HashSet<&'a HashBytes, ahash::RandomState>,
-            changed_cells: scc::HashSet<&'a HashBytes, ahash::RandomState>,
-            deferred: scc::HashMap<&'a HashBytes, Promise<bool>, ahash::RandomState>,
+            pruned_branches: dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            changed_cells: dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            deferred: dashmap::DashMap<&'a HashBytes, Promise<bool>, ahash::RandomState>,
             filter: &'a (dyn MerkleFilter + Send + Sync),
         }
 
@@ -1136,7 +1117,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                         }
 
                         if result {
-                            self.changed_cells.insert(hash).ok();
+                            self.changed_cells.insert(hash);
                         }
 
                         result | is_pruned
@@ -1193,10 +1174,10 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                 if let Some(scope) = scope {
                     if unlikely(self.split_at.contains(repr_hash)) {
                         let entry = match self.resolver.deferred.entry(repr_hash) {
-                            scc::hash_map::Entry::Occupied(entry) => {
+                            dashmap::Entry::Occupied(entry) => {
                                 return CheckResult::Deferred(entry.get().clone());
                             }
-                            scc::hash_map::Entry::Vacant(entry) => entry,
+                            dashmap::Entry::Vacant(entry) => entry,
                         };
 
                         let promise = Promise::new();
@@ -1258,7 +1239,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                     }
 
                     if result {
-                        self.resolver.changed_cells.insert(cell_hash).ok();
+                        self.resolver.changed_cells.insert(cell_hash);
                     }
 
                     return CheckResult::Immediate(result | is_pruned);
@@ -1331,7 +1312,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
 
             // Find all changed cells in the old cell tree
             if resolver.fill(self.old, &old_split_at) {
-                resolver.changed_cells.insert(old_hash).ok();
+                resolver.changed_cells.insert(old_hash);
             }
 
             resolver.changed_cells

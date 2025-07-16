@@ -422,7 +422,7 @@ where
         self,
         context: &'c (dyn CellContext + Send + Sync),
         split_at: ahash::HashSet<HashBytes>,
-    ) -> Result<(Cell, scc::HashSet<&'a HashBytes, ahash::RandomState>), Error> {
+    ) -> Result<(Cell, dashmap::DashSet<&'a HashBytes, ahash::RandomState>), Error> {
         let pruned_branches = Default::default();
         let builder = ParBuilderImpl {
             root: self.root,
@@ -568,8 +568,8 @@ impl BuilderImpl<'_, '_, '_> {
 struct ParBuilderImpl<'a, 'b, 'c: 'a> {
     root: &'a DynCell,
     filter: &'b (dyn MerkleFilter + Send + Sync),
-    cells: scc::HashMap<&'a HashBytes, ExtCell, ahash::RandomState>,
-    pruned_branches: Option<&'b scc::HashSet<&'a HashBytes, ahash::RandomState>>,
+    cells: dashmap::DashMap<&'a HashBytes, ExtCell, ahash::RandomState>,
+    pruned_branches: Option<&'b dashmap::DashSet<&'a HashBytes, ahash::RandomState>>,
     context: &'c (dyn CellContext + Send + Sync),
     split_at: ahash::HashSet<HashBytes>,
     allow_different_root: bool,
@@ -654,7 +654,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
 
                             // Insert pruned branch for the current cell
                             if let Some(pruned_branch) = self.pruned_branches {
-                                pruned_branch.insert(child_repr_hash).ok();
+                                pruned_branch.insert(child_repr_hash);
                             }
 
                             // Use new pruned branch as a child
@@ -723,7 +723,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                 };
 
                 // Save this cell as processed cell
-                self.cells.insert(cell.repr_hash(), proof_cell.clone()).ok();
+                self.cells.insert(cell.repr_hash(), proof_cell.clone());
 
                 match stack.last_mut() {
                     // Append this cell to the ancestor

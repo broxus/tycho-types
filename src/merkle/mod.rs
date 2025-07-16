@@ -96,9 +96,9 @@ impl<S: BuildHasher> MerkleFilter for HashSet<&HashBytes, S> {
 }
 
 #[cfg(feature = "rayon")]
-impl<S: BuildHasher + Clone> MerkleFilter for scc::HashSet<&'_ HashBytes, S> {
+impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<&'_ HashBytes, S> {
     fn check(&self, cell: &HashBytes) -> FilterAction {
-        if scc::HashSet::contains(self, cell) {
+        if dashmap::DashSet::contains(self, cell) {
             FilterAction::Include
         } else {
             FilterAction::Skip
@@ -107,9 +107,9 @@ impl<S: BuildHasher + Clone> MerkleFilter for scc::HashSet<&'_ HashBytes, S> {
 }
 
 #[cfg(feature = "rayon")]
-impl<S: BuildHasher + Clone> MerkleFilter for scc::HashSet<HashBytes, S> {
+impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<HashBytes, S> {
     fn check(&self, cell: &HashBytes) -> FilterAction {
-        if scc::HashSet::contains(self, cell) {
+        if dashmap::DashSet::contains(self, cell) {
             FilterAction::Include
         } else {
             FilterAction::Skip
