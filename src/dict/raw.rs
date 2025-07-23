@@ -1661,7 +1661,7 @@ mod tests {
         let cell = dict.root().as_ref().unwrap();
         let boc = Boc::encode_base64(cell);
 
-        println!("{}", boc);
+        println!("{boc}");
 
         let key = CellBuilder::build_from(1u16 << 8)?;
 

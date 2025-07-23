@@ -8,12 +8,10 @@ pub use self::pruned_branch::make_pruned_branch;
 pub use self::update::{MerkleUpdate, MerkleUpdateBuilder};
 use crate::cell::{HashBytes, UsageTree, UsageTreeWithSubtrees};
 
-#[cfg(all(feature = "rayon", feature = "sync"))]
-mod ext_cell;
-#[cfg(all(feature = "rayon", feature = "sync"))]
-mod promise;
 mod proof;
 mod pruned_branch;
+#[cfg(all(feature = "rayon", feature = "sync"))]
+mod sync_util;
 mod update;
 
 #[cfg(test)]

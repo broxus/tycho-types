@@ -2,9 +2,7 @@
 use std::sync::Arc;
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-use super::ext_cell::{CellParts as ExtCellParts, ChildrenBuilder, ExtCell, resolve_ext_cell};
-#[cfg(all(feature = "rayon", feature = "sync"))]
-use super::promise::Promise;
+use super::sync_util::{ChildrenBuilder, ExtCell, ExtCellParts, Promise};
 use super::{FilterAction, MerkleFilter, make_pruned_branch};
 use crate::cell::*;
 use crate::error::Error;
@@ -589,7 +587,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
         loop {
             match root_cell {
                 ExtCell::Ordinary(cell) => break Ok(cell),
-                root_cell @ ExtCell::Partial(_) => break resolve_ext_cell(root_cell, self.context),
+                root_cell @ ExtCell::Partial(_) => break root_cell.resolve(self.context),
                 ExtCell::Deferred(rx) => {
                     root_cell = ok!(rx.wait_cloned());
                 }
