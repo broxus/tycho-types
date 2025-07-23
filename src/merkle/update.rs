@@ -2,9 +2,7 @@
 use std::sync::Arc;
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-use super::ext_cell::{CellParts as ExtCellParts, ChildrenBuilder, ExtCell, resolve_ext_cell};
-#[cfg(all(feature = "rayon", feature = "sync"))]
-use super::promise::Promise;
+use super::sync_util::{ChildrenBuilder, ExtCell, ExtCellParts, Promise};
 use super::{FilterAction, MerkleFilter, MerkleProofBuilder, make_pruned_branch};
 use crate::cell::*;
 use crate::error::Error;
@@ -179,7 +177,6 @@ impl MerkleUpdate {
                 result.set_exotic(descriptor.is_exotic());
 
                 // Build all child cells
-                let mut children_mask = LevelMask::EMPTY;
                 for child in cell.references().cloned() {
                     let child_descriptor = child.as_ref().descriptor();
 
@@ -208,7 +205,6 @@ impl MerkleUpdate {
                         }
                     };
 
-                    children_mask |= child.as_ref().level_mask();
                     _ = result.store_reference(child);
                 }
 
@@ -221,7 +217,7 @@ impl MerkleUpdate {
         // Collect old cells
         let old_cells = {
             // Collect and check old cells tree
-            let old_cell_hashes = self.find_old_cells()?;
+            let old_cell_hashes = ok!(self.find_old_cells());
 
             let mut visited = ahash::HashSet::default();
             let mut old_cells = ahash::HashMap::default();
@@ -308,12 +304,13 @@ impl MerkleUpdate {
         }
 
         struct Applier<'a> {
-            old_cells: dashmap::DashMap<HashBytes, Cell, ahash::RandomState>,
-            new_cells: dashmap::DashMap<HashBytes, Cell, ahash::RandomState>,
+            old_cells: dashmap::DashMap<&'a HashBytes, Cell, ahash::RandomState>,
+            new_cells: dashmap::DashMap<HashBytes, ExtCell, ahash::RandomState>,
             context: &'a (dyn CellContext + Send + Sync),
         }
 
         impl Applier<'_> {
+            // TODO: Replace with a non-recursive impl
             fn run<'scope>(
                 &'scope self,
                 cell: &DynCell,
@@ -321,101 +318,171 @@ impl MerkleUpdate {
                 traverse_depth: u16,
                 scope: Option<&rayon::Scope<'scope>>,
             ) -> Result<ExtCell, Error> {
-                let mut children = ChildrenBuilder::Ordinary(Default::default());
-
                 let descriptor = cell.descriptor();
                 let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
 
+                // Start building a new cell
+                let mut builder = ChildrenBuilder::Ordinary(Default::default());
+
+                // Build all child cells
                 for child in cell.references().cloned() {
                     let child_descriptor = child.as_ref().descriptor();
 
-                    let child = if child_descriptor.is_pruned_branch() {
-                        // Replace pruned branches with old cells
-                        let mask = child_descriptor.level_mask();
-                        if mask.to_byte() & (1 << child_merkle_depth) != 0 {
-                            // Use original hash for pruned branches
-                            let child_hash = child.as_ref().hash(mask.level() - 1);
-                            match self.old_cells.get(child_hash) {
-                                Some(cell) => ExtCell::Ordinary(cell.clone()),
-                                None => return Err(Error::InvalidData),
-                            }
-                        } else {
-                            ExtCell::Ordinary(child)
-                        }
+                    let child = ok!(if child_descriptor.is_pruned_branch() {
+                        self.resolve_pruned_branch(child, child_descriptor, child_merkle_depth)
                     } else {
-                        // Build a child cell if it hasn't been built before
-                        let child_hash = child.as_ref().hash(child_merkle_depth);
-                        if let Some(child) = self.new_cells.get(child_hash) {
-                            ExtCell::Ordinary(child.clone())
-                        } else {
-                            let child = match scope {
-                                Some(scope)
-                                    if traverse_depth > ROOT_SPLIT_DEPTH
-                                        && child.repr_depth() > CHILD_SPLIT_DEPTH =>
-                                {
-                                    let promise = Promise::new();
-                                    let merkle_depth = child_merkle_depth;
-                                    let traverse_depth = traverse_depth + 1;
-                                    scope.spawn({
-                                        let promise = promise.clone();
-                                        let child = child.clone();
-                                        move |_| {
-                                            let cell = self.run(
-                                                child.as_ref(),
-                                                merkle_depth,
-                                                traverse_depth,
-                                                None,
-                                            );
-                                            promise.set(cell);
-                                        }
-                                    });
-                                    ExtCell::Deferred(promise)
-                                }
-                                _ => {
-                                    ok!(self.run(
-                                        child.as_ref(),
-                                        child_merkle_depth,
-                                        traverse_depth + 1,
-                                        scope
-                                    ))
-                                }
-                            };
+                        self.resolve_subtree(child, child_merkle_depth, traverse_depth, scope)
+                    });
 
-                            if let ExtCell::Ordinary(cell) = &child {
-                                self.new_cells.insert(*child_hash, cell.clone());
-                            }
-
-                            child
-                        }
-                    };
-
-                    children.store_reference(child)?;
+                    ok!(builder.store_reference(child));
                 }
 
                 // Build the cell
-                let cell = match children {
-                    ChildrenBuilder::Ordinary(children) => {
+                match builder {
+                    ChildrenBuilder::Ordinary(refs) => {
                         let mut builder = CellBuilder::new();
                         builder.set_exotic(cell.is_exotic());
                         _ = builder.store_cell_data(cell);
-                        builder.set_references(children);
-                        let new_cell = ok!(builder.build_ext(self.context));
+                        builder.set_references(refs);
 
-                        ExtCell::Ordinary(new_cell)
+                        builder.build_ext(self.context).map(ExtCell::Ordinary)
                     }
                     ChildrenBuilder::Extended(refs) => {
                         let mut builder = CellDataBuilder::new();
                         builder.store_cell_data(cell)?;
-                        ExtCell::Partial(Arc::new(ExtCellParts {
+                        Ok(ExtCell::Partial(Arc::new(ExtCellParts {
                             data: builder,
                             is_exotic: cell.is_exotic(),
                             refs,
-                        }))
+                        })))
                     }
-                };
+                }
+            }
 
+            // Replace pruned branches with old cells
+            fn resolve_pruned_branch(
+                &self,
+                cell: Cell,
+                descriptor: CellDescriptor,
+                merkle_depth: u8,
+            ) -> Result<ExtCell, Error> {
+                let mask = descriptor.level_mask();
+                if mask.to_byte() & (1 << merkle_depth) != 0 {
+                    // Use original hash for pruned branches
+                    let child_hash = cell.as_ref().hash(mask.level() - 1);
+                    match self.old_cells.get(child_hash) {
+                        Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
+                        None => return Err(Error::InvalidData),
+                    }
+                } else {
+                    Ok(ExtCell::Ordinary(cell))
+                }
+            }
+
+            // Build a child cell if it hasn't been built before
+            fn resolve_subtree<'scope>(
+                &'scope self,
+                cell: Cell,
+                merkle_depth: u8,
+                traverse_depth: u16,
+                scope: Option<&rayon::Scope<'scope>>,
+            ) -> Result<ExtCell, Error> {
+                let hash = cell.as_ref().hash(merkle_depth);
+
+                if let Some(child) = self.new_cells.get(hash) {
+                    return Ok(child.clone());
+                }
+
+                if let Some(scope) = scope {
+                    if traverse_depth > ROOT_SPLIT_DEPTH && cell.repr_depth() > CHILD_SPLIT_DEPTH {
+                        let promise = Promise::new();
+                        scope.spawn({
+                            let promise = promise.clone();
+                            move |_| {
+                                let result =
+                                    self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
+                                promise.set(result);
+                            }
+                        });
+                        return Ok(ExtCell::Deferred(promise));
+                    }
+                }
+
+                let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
+                self.new_cells.insert(*hash, cell.clone());
                 Ok(cell)
             }
+        }
+
+        // Finds original old cell roots by their hashes.
+        fn find_old_subtrees<'a, 's>(
+            cell_ref: &'a DynCell,
+            cell: Cell,
+            mut merkle_depth: u8,
+            scope: Option<&rayon::Scope<'s>>,
+            split_at: &'s ahash::HashSet<HashBytes>,
+            visited: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            old_cells: &'s dashmap::DashMap<&'a HashBytes, Cell, ahash::RandomState>,
+            old_cell_hashes: &'s ahash::HashSet<&'a HashBytes>,
+        ) {
+            let original_merkle_depth = merkle_depth;
+
+            // Insert root
+            if !visited.insert(cell_ref.repr_hash()) {
+                return;
+            }
+            old_cells.insert(cell_ref.hash(merkle_depth), cell);
+            merkle_depth += cell_ref.descriptor().is_merkle() as u8;
+
+            let mut stack = vec![cell_ref.references()];
+            'outer: while let Some(iter) = stack.last_mut() {
+                let cloned = iter.clone().cloned();
+                for (cell_ref, cell) in std::iter::zip(&mut *iter, cloned) {
+                    if let Some(scope) = scope {
+                        if split_at.contains(cell.repr_hash()) {
+                            scope.spawn(move |_| {
+                                find_old_subtrees(
+                                    cell_ref,
+                                    cell,
+                                    merkle_depth,
+                                    None,
+                                    split_at,
+                                    visited,
+                                    old_cells,
+                                    old_cell_hashes,
+                                );
+                            });
+                            continue;
+                        }
+                    }
+
+                    if !visited.insert(cell_ref.repr_hash()) {
+                        continue;
+                    }
+
+                    let hash = cell_ref.hash(merkle_depth);
+                    if !old_cell_hashes.contains(hash) {
+                        // Skip new cells
+                        continue;
+                    }
+
+                    // Store an owned cell with original merkle depth
+                    old_cells.insert(hash, cell);
+
+                    // Increase the current merkle depth if needed
+                    merkle_depth += cell_ref.descriptor().is_merkle() as u8;
+                    // And proceed to processing this child
+                    stack.push(cell_ref.references());
+                    continue 'outer;
+                }
+
+                // Decrease the current merkle depth if needed
+                merkle_depth -= iter.cell().descriptor().is_merkle() as u8;
+                // And return to the previous depth
+                stack.pop();
+            }
+
+            assert_eq!(merkle_depth, original_merkle_depth);
         }
 
         // Collect old cells
@@ -427,69 +494,9 @@ impl MerkleUpdate {
             let old_cells = Default::default();
 
             rayon::scope(|scope| {
-                fn traverse<'a>(
-                    (cell_ref, cell): (&'a DynCell, Cell),
-                    merkle_depth: u8,
-                    scope: Option<&rayon::Scope<'a>>,
-                    split_at: &'a ahash::HashSet<HashBytes>,
-                    visited: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
-                    old_cells: &'a dashmap::DashMap<HashBytes, Cell, ahash::RandomState>,
-                    old_cell_hashes: &'a ahash::HashSet<HashBytes>,
-                ) {
-                    if !visited.insert(*cell_ref.repr_hash()) {
-                        return;
-                    }
-
-                    let hash = cell_ref.hash(merkle_depth);
-                    if !old_cell_hashes.contains(hash) {
-                        // Skip new cells
-                        return;
-                    }
-
-                    // Store an owned cell with original merkle depth
-                    old_cells.insert(*hash, cell);
-
-                    let next_merkle_depth = merkle_depth + cell_ref.descriptor().is_merkle() as u8;
-
-                    let mut iter = cell_ref.references();
-                    let cloned = iter.clone().cloned();
-                    for (child_ref, child) in std::iter::zip(&mut iter, cloned) {
-                        match scope {
-                            Some(scope) if split_at.contains(child.repr_hash()) => {
-                                scope.spawn(move |_| {
-                                    traverse(
-                                        (child_ref, child),
-                                        next_merkle_depth,
-                                        None,
-                                        split_at,
-                                        visited,
-                                        old_cells,
-                                        old_cell_hashes,
-                                    );
-                                });
-                            }
-                            _ => {
-                                traverse(
-                                    (child_ref, child),
-                                    next_merkle_depth,
-                                    scope,
-                                    split_at,
-                                    visited,
-                                    old_cells,
-                                    old_cell_hashes,
-                                );
-                            }
-                        }
-                    }
-
-                    debug_assert_eq!(
-                        merkle_depth,
-                        next_merkle_depth - iter.cell().descriptor().is_merkle() as u8,
-                    );
-                }
-
-                traverse(
-                    (old.as_ref(), old.clone()),
+                find_old_subtrees(
+                    old.as_ref(),
+                    old.clone(),
                     0,
                     Some(scope),
                     old_split_at,
@@ -499,7 +506,7 @@ impl MerkleUpdate {
                 );
             });
 
-            old_cells.into_iter().collect()
+            old_cells
         };
 
         // Apply changed cells
@@ -511,7 +518,7 @@ impl MerkleUpdate {
             };
 
             let new = rayon::scope(|scope| applier.run(self.new.as_ref(), 0, 0, Some(scope)))?;
-            resolve_ext_cell(new, context)?
+            new.resolve(context)?
         };
 
         if new.as_ref().repr_hash() == &self.new_hash {
@@ -702,70 +709,166 @@ impl MerkleUpdate {
     }
 
     #[cfg(all(feature = "rayon", feature = "sync"))]
-    fn par_find_old_cells(
-        &self,
-        split_at: &ahash::HashSet<HashBytes>,
-    ) -> Result<ahash::HashSet<HashBytes>, Error> {
+    fn par_find_old_cells<'a, 's: 'a>(
+        &'a self,
+        split_at: &'s ahash::HashSet<HashBytes>,
+    ) -> Result<ahash::HashSet<&'a HashBytes>, Error> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        fn traverse_old_cells<'a, 's>(
+            cell: &'a DynCell,
+            mut merkle_depth: u8,
+            scope: Option<&rayon::Scope<'s>>,
+            split_at: &'s ahash::HashSet<HashBytes>,
+            visited: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            old_cells: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+        ) {
+            if !visited.insert(cell.repr_hash()) {
+                return;
+            }
+            old_cells.insert(cell.hash(merkle_depth));
+
+            let original_merkle_depth = merkle_depth;
+            merkle_depth += cell.descriptor().is_merkle() as u8;
+            let mut stack = vec![cell.references()];
+
+            'outer: while let Some(iter) = stack.last_mut() {
+                for child in &mut *iter {
+                    let child_hash = child.repr_hash();
+
+                    if let Some(scope) = scope {
+                        if split_at.contains(child_hash) {
+                            scope.spawn(move |_| {
+                                traverse_old_cells(
+                                    child,
+                                    merkle_depth,
+                                    None,
+                                    split_at,
+                                    visited,
+                                    old_cells,
+                                );
+                            });
+                            continue;
+                        }
+                    }
+
+                    if !visited.insert(child.repr_hash()) {
+                        continue;
+                    }
+
+                    // Store cell with original merkle depth
+                    old_cells.insert(child.hash(merkle_depth));
+
+                    // Skip children for pruned branches
+                    let descriptor = child.descriptor();
+                    if descriptor.is_pruned_branch() {
+                        continue;
+                    }
+
+                    // Increase the current merkle depth if needed
+                    merkle_depth += descriptor.is_merkle() as u8;
+                    // And proceed to processing this child
+                    stack.push(child.references());
+                    continue 'outer;
+                }
+
+                // Decrease the current merkle depth if needed
+                merkle_depth -= iter.cell().descriptor().is_merkle() as u8;
+                // And return to the previous depth
+                stack.pop();
+            }
+
+            debug_assert_eq!(merkle_depth, original_merkle_depth);
+        }
+
+        // TODO: Reuse stack from `traverse_old_cells`
+        fn traverse_new_cells<'a, 's>(
+            cell: &'a DynCell,
+            mut merkle_depth: u8,
+            scope: Option<&rayon::Scope<'s>>,
+            visited: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            old_cells: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            is_invalid: &'s AtomicBool,
+        ) {
+            if !visited.insert(cell.repr_hash()) {
+                return;
+            }
+
+            let original_merkle_depth = merkle_depth;
+
+            let check_invalid = |descriptor: CellDescriptor, cell: &DynCell, merkle_depth: u8| {
+                descriptor.level_mask().level() == merkle_depth + 1
+                    && !old_cells.contains(cell.hash(merkle_depth))
+            };
+
+            let descriptor = cell.descriptor();
+            if descriptor.is_pruned_branch() {
+                if check_invalid(descriptor, cell, merkle_depth) {
+                    is_invalid.store(true, Ordering::Relaxed);
+                }
+                return;
+            } else {
+                merkle_depth += descriptor.is_merkle() as u8;
+            }
+
+            let mut stack = vec![cell.references()];
+            let mut traverse_depth = 1usize;
+            'outer: while let Some(iter) = stack.last_mut() {
+                for child in &mut *iter {
+                    if let Some(scope) = scope {
+                        if traverse_depth > ROOT_SPLIT_DEPTH as usize
+                            && child.repr_depth() > CHILD_SPLIT_DEPTH
+                        {
+                            scope.spawn(move |_| {
+                                traverse_new_cells(
+                                    child,
+                                    merkle_depth,
+                                    None,
+                                    visited,
+                                    old_cells,
+                                    is_invalid,
+                                );
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Skip visited cells
+                    if !visited.insert(child.repr_hash()) {
+                        continue;
+                    }
+
+                    // Unchanged cells (as pruned branches) must be presented in the old tree
+                    let descriptor = child.descriptor();
+                    if descriptor.is_pruned_branch() {
+                        if unlikely(check_invalid(descriptor, child, merkle_depth)) {
+                            is_invalid.store(true, Ordering::Release);
+                            return;
+                        }
+                    } else {
+                        // Increase the current merkle depth if needed
+                        merkle_depth += descriptor.is_merkle() as u8;
+                        // And proceed to processing this child
+                        stack.push(child.references());
+                        traverse_depth += 1;
+                        continue 'outer;
+                    }
+                }
+
+                // Decrease the current merkle depth if needed
+                merkle_depth -= iter.cell().descriptor().is_merkle() as u8;
+                traverse_depth -= 1;
+                // And return to the previous depth
+                stack.pop();
+            }
+
+            debug_assert_eq!(merkle_depth, original_merkle_depth);
+        }
+
         let visited = Default::default();
         let old_cells = Default::default();
 
         rayon::scope(|scope| {
-            fn traverse_old_cells<'a>(
-                cell: &'a DynCell,
-                merkle_depth: u8,
-                scope: Option<&rayon::Scope<'a>>,
-                split_at: &'a ahash::HashSet<HashBytes>,
-                visited: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
-                result: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
-            ) {
-                if !visited.insert(*cell.repr_hash()) {
-                    return;
-                }
-
-                result.insert(*cell.hash(merkle_depth));
-
-                let descriptor = cell.descriptor();
-
-                if descriptor.is_pruned_branch() {
-                    return;
-                }
-
-                let next_merkle_depth = merkle_depth + descriptor.is_merkle() as u8;
-
-                let mut iter = cell.references();
-                for child in &mut iter {
-                    match scope {
-                        Some(scope) if split_at.contains(child.repr_hash()) => {
-                            scope.spawn(move |_| {
-                                traverse_old_cells(
-                                    child,
-                                    next_merkle_depth,
-                                    None,
-                                    split_at,
-                                    visited,
-                                    result,
-                                );
-                            });
-                        }
-                        _ => {
-                            traverse_old_cells(
-                                child,
-                                next_merkle_depth,
-                                scope,
-                                split_at,
-                                visited,
-                                result,
-                            );
-                        }
-                    }
-                }
-
-                debug_assert_eq!(
-                    merkle_depth,
-                    next_merkle_depth - iter.cell().descriptor().is_merkle() as u8,
-                );
-            }
-
             traverse_old_cells(
                 self.old.as_ref(),
                 0,
@@ -778,79 +881,23 @@ impl MerkleUpdate {
 
         visited.clear();
 
+        let mut is_invalid = AtomicBool::new(false);
         rayon::scope(|scope| {
-            fn traverse_new_cells<'a>(
-                cell: &'a DynCell,
-                merkle_depth: u8,
-                traverse_depth: u16,
-                scope: Option<&rayon::Scope<'a>>,
-                visited: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
-                old_cells: &'a dashmap::DashSet<HashBytes, ahash::RandomState>,
-            ) {
-                if !visited.insert(*cell.repr_hash()) {
-                    return;
-                }
-
-                let descriptor = cell.descriptor();
-
-                if descriptor.is_pruned_branch() {
-                    let level_ok = descriptor.level_mask().level() == merkle_depth + 1;
-                    debug_assert!(!level_ok || old_cells.contains(cell.hash(merkle_depth)),);
-                }
-
-                let next_merkle_depth = merkle_depth + descriptor.is_merkle() as u8;
-                let next_traverse_depth = traverse_depth + 1;
-
-                let mut iter = cell.references();
-                for child in &mut iter {
-                    match scope {
-                        Some(scope)
-                            if traverse_depth > ROOT_SPLIT_DEPTH
-                                && child.repr_depth() > CHILD_SPLIT_DEPTH =>
-                        {
-                            scope.spawn(move |_| {
-                                traverse_new_cells(
-                                    child,
-                                    next_merkle_depth,
-                                    next_traverse_depth,
-                                    None,
-                                    visited,
-                                    old_cells,
-                                );
-                            });
-                        }
-                        _ => {
-                            traverse_new_cells(
-                                child,
-                                next_merkle_depth,
-                                next_traverse_depth,
-                                scope,
-                                visited,
-                                old_cells,
-                            );
-                        }
-                    }
-                }
-
-                debug_assert_eq!(
-                    merkle_depth,
-                    next_merkle_depth - iter.cell().descriptor().is_merkle() as u8,
-                );
-            }
-
-            let merkle_depth = self.new.descriptor().is_merkle() as u8;
-
             traverse_new_cells(
                 self.new.as_ref(),
-                merkle_depth,
                 0,
                 Some(scope),
                 &visited,
                 &old_cells,
-            )
+                &is_invalid,
+            );
         });
 
-        Ok(old_cells.into_iter().collect())
+        if *is_invalid.get_mut() {
+            Err(Error::InvalidData)
+        } else {
+            Ok(old_cells.into_iter().collect())
+        }
     }
 }
 
