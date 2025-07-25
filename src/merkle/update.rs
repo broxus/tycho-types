@@ -372,7 +372,7 @@ impl MerkleUpdate {
                     let child_hash = cell.as_ref().hash(mask.level() - 1);
                     match self.old_cells.get(child_hash) {
                         Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
-                        None => return Err(Error::InvalidData),
+                        None => Err(Error::InvalidData),
                     }
                 } else {
                     Ok(ExtCell::Ordinary(cell))
@@ -435,11 +435,14 @@ impl MerkleUpdate {
             merkle_depth += cell_ref.descriptor().is_merkle() as u8;
 
             let mut stack = vec![cell_ref.references()];
+            let mut traverse_depth = 1usize;
             'outer: while let Some(iter) = stack.last_mut() {
                 let cloned = iter.clone().cloned();
                 for (cell_ref, cell) in std::iter::zip(&mut *iter, cloned) {
                     if let Some(scope) = scope {
-                        if split_at.contains(cell.repr_hash()) {
+                        if traverse_depth > ROOT_SPLIT_DEPTH as usize
+                            && cell.repr_depth() > CHILD_SPLIT_DEPTH
+                        {
                             scope.spawn(move |_| {
                                 find_old_subtrees(
                                     cell_ref,
@@ -471,6 +474,7 @@ impl MerkleUpdate {
 
                     // Increase the current merkle depth if needed
                     merkle_depth += cell_ref.descriptor().is_merkle() as u8;
+                    traverse_depth += 1;
                     // And proceed to processing this child
                     stack.push(cell_ref.references());
                     continue 'outer;
@@ -478,6 +482,7 @@ impl MerkleUpdate {
 
                 // Decrease the current merkle depth if needed
                 merkle_depth -= iter.cell().descriptor().is_merkle() as u8;
+                traverse_depth -= 1;
                 // And return to the previous depth
                 stack.pop();
             }
@@ -731,13 +736,14 @@ impl MerkleUpdate {
             let original_merkle_depth = merkle_depth;
             merkle_depth += cell.descriptor().is_merkle() as u8;
             let mut stack = vec![cell.references()];
+            let mut traverse_depth = 1usize;
 
             'outer: while let Some(iter) = stack.last_mut() {
                 for child in &mut *iter {
-                    let child_hash = child.repr_hash();
-
                     if let Some(scope) = scope {
-                        if split_at.contains(child_hash) {
+                        if traverse_depth > ROOT_SPLIT_DEPTH as usize
+                            && child.repr_depth() > CHILD_SPLIT_DEPTH
+                        {
                             scope.spawn(move |_| {
                                 traverse_old_cells(
                                     child,
@@ -769,11 +775,13 @@ impl MerkleUpdate {
                     merkle_depth += descriptor.is_merkle() as u8;
                     // And proceed to processing this child
                     stack.push(child.references());
+                    traverse_depth += 1;
                     continue 'outer;
                 }
 
                 // Decrease the current merkle depth if needed
                 merkle_depth -= iter.cell().descriptor().is_merkle() as u8;
+                traverse_depth -= 1;
                 // And return to the previous depth
                 stack.pop();
             }
