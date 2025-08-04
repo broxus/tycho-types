@@ -2,7 +2,6 @@
 use super::CellTreeStats;
 use super::cell_impl::VirtualCellWrapper;
 use super::{Cell, CellDescriptor, CellImpl, CellInner, DynCell, HashBytes};
-use crate::util::TryAsMut;
 
 /// Rule for including cells in the usage tree.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -160,21 +159,6 @@ impl CellImpl for UsageCell {
 
     fn depth(&self, level: u8) -> u16 {
         self.cell.depth(level)
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        self.cell.try_as_mut()?.take_first_child()
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> Result<Cell, Cell> {
-        match self.cell.try_as_mut() {
-            Some(cell) => cell.replace_first_child(parent),
-            None => Err(parent),
-        }
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        self.cell.try_as_mut()?.take_next_child()
     }
 
     #[cfg(feature = "stats")]

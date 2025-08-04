@@ -1,5 +1,5 @@
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 
 #[cfg(feature = "stats")]
 use super::CellTreeStats;
@@ -29,8 +29,6 @@ pub mod rc;
 /// Thread-safe cell implementation.
 #[cfg(feature = "sync")]
 pub mod sync;
-
-type ReplacedChild = Result<Cell, Cell>;
 
 /// Helper struct for tightly packed cell data.
 #[repr(C)]
@@ -76,18 +74,6 @@ impl CellImpl for EmptyOrdinaryCell {
 
     fn depth(&self, _: u8) -> u16 {
         0
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        None
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        Err(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        None
     }
 
     #[cfg(feature = "stats")]
@@ -165,18 +151,6 @@ impl CellImpl for StaticCell {
         0
     }
 
-    fn take_first_child(&mut self) -> Option<Cell> {
-        None
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        Err(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        None
-    }
-
     #[cfg(feature = "stats")]
     fn stats(&self) -> CellTreeStats {
         CellTreeStats {
@@ -229,10 +203,9 @@ struct OrdinaryCellHeader {
     bit_len: u16,
     #[cfg(feature = "stats")]
     stats: CellTreeStats,
-    hashes: Vec<(HashBytes, u16)>,
+    hashes: Box<[(HashBytes, u16)]>,
     descriptor: CellDescriptor,
     references: [MaybeUninit<Cell>; MAX_REF_COUNT],
-    without_first: bool,
 }
 
 impl OrdinaryCellHeader {
@@ -253,135 +226,18 @@ impl OrdinaryCellHeader {
             None
         }
     }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        if self.descriptor.reference_count() > 0 && !self.without_first {
-            self.without_first = true;
-            let references_ptr = self.references.as_ptr() as *const Cell;
-            Some(unsafe { std::ptr::read(references_ptr) })
-        } else {
-            None
-        }
-    }
-
-    fn replace_first_child_with_parent(&mut self, parent: Cell) -> ReplacedChild {
-        if self.descriptor.reference_count() > 0 && !self.without_first {
-            let references_ptr = self.references.as_mut_ptr() as *mut Cell;
-            unsafe {
-                let result = Ok(std::ptr::read(references_ptr));
-                std::ptr::write(references_ptr, parent);
-                result
-            }
-        } else {
-            Err(parent)
-        }
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        if self.descriptor.reference_count() > 1 {
-            self.descriptor.d1 -= 1;
-            let references_ptr = self.references.as_ptr() as *const Cell;
-            let idx = self.descriptor.d1 & CellDescriptor::REF_COUNT_MASK;
-            Some(unsafe { std::ptr::read(references_ptr.add(idx as usize)) })
-        } else {
-            None
-        }
-    }
 }
 
 impl Drop for OrdinaryCellHeader {
     fn drop(&mut self) {
-        // Returns the nearest ancestor and its consumed next child.
-        // Returns `None` if no ancestors with children found.
-        #[inline]
-        fn take_ancestor_next_child(parent: Cell) -> Option<(Cell, Cell)> {
-            let mut ancestor = parent;
-            while let Some(ancestor_ref) = ancestor.try_as_mut() {
-                // Try to get the next child from the direct ancestor
-                if let Some(next_child) = ancestor_ref.take_next_child() {
-                    return Some((ancestor, next_child));
-                } else if let Some(grand_ancestor) = ancestor_ref.take_first_child() {
-                    // Drop `ancestor` as it is now a leaf node
-                    drop(ancestor);
-
-                    // Move one level deeper
-                    ancestor = grand_ancestor;
-                } else {
-                    // Break on leaf node
-                    break;
-                }
-            }
-            None
-        }
-
-        fn main_deep_safe_drop(mut parent: Cell) {
-            // Consume first child from parent.
-            let mut current = 'curr: {
-                if let Some(parent) = parent.try_as_mut() {
-                    if let Some(first_child) = parent.take_first_child() {
-                        break 'curr first_child;
-                    }
-                }
-                return;
-            };
-
-            loop {
-                // If current node is unique
-                if let Some(current_ref) = current.try_as_mut() {
-                    // Try to replace its first child with the current parent
-                    match current_ref.replace_first_child(parent) {
-                        Ok(first_child) => {
-                            // Move one layer lower
-                            parent = current;
-                            current = first_child;
-                            continue;
-                        }
-                        Err(returned_parent) => {
-                            parent = returned_parent;
-
-                            // Current node is now a leaf, drop it
-                            drop(current);
-                        }
-                    }
-                }
-
-                // Find the next child
-                let Some((ancestor, child)) = take_ancestor_next_child(parent) else {
-                    return;
-                };
-
-                parent = ancestor;
-                current = child;
-            }
-        }
-
-        fn deep_drop_impl(cell: &mut Cell) {
-            let Some(cell) = cell.try_as_mut() else {
-                return;
-            };
-
-            if let Some(first_child) = cell.take_first_child() {
-                main_deep_safe_drop(first_child);
-
-                while let Some(next_child) = cell.take_next_child() {
-                    main_deep_safe_drop(next_child);
-                }
-            }
-        }
-
         let references_ptr = self.references.as_mut_ptr() as *mut Cell;
         debug_assert!(self.descriptor.reference_count() <= MAX_REF_COUNT as u8);
 
         for i in 0..self.descriptor.reference_count() {
-            if i == 0 && self.without_first {
-                continue;
-            }
-
             // SAFETY: references were initialized
-            unsafe {
-                let child_ptr = references_ptr.add(i as usize);
-                deep_drop_impl(&mut *child_ptr);
-                std::ptr::drop_in_place(child_ptr);
+            let child = unsafe { std::ptr::read(references_ptr.add(i as usize)) };
+            if CellInner::strong_count(&child.0) == 1 {
+                SafeDeleter::retire(child.0);
             }
         }
     }
@@ -432,18 +288,6 @@ impl<const N: usize> CellImpl for OrdinaryCell<N> {
 
     fn depth(&self, level: u8) -> u16 {
         self.header.level_descr(level).1
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        self.header.take_first_child()
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        self.header.replace_first_child_with_parent(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        self.header.take_next_child()
     }
 
     #[cfg(feature = "stats")]
@@ -498,18 +342,6 @@ impl CellImpl for LibraryReference {
 
     fn depth(&self, _: u8) -> u16 {
         0
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        None
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        Err(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        None
     }
 
     #[cfg(feature = "stats")]
@@ -599,18 +431,6 @@ impl<const N: usize> CellImpl for PrunedBranch<N> {
         }
     }
 
-    fn take_first_child(&mut self) -> Option<Cell> {
-        None
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        Err(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        None
-    }
-
     #[cfg(feature = "stats")]
     fn stats(&self) -> CellTreeStats {
         aligned_leaf_stats(self.header.descriptor)
@@ -662,21 +482,6 @@ where
     fn depth(&self, level: u8) -> u16 {
         let cell = self.0.as_ref();
         cell.depth(virtual_hash_index(cell.descriptor(), level, 0))
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        self.0.try_as_mut()?.take_first_child()
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        self.0.try_as_mut()?.take_next_child()
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        match self.0.try_as_mut() {
-            Some(cell) => cell.replace_first_child(parent),
-            None => Err(parent),
-        }
     }
 
     #[cfg(feature = "stats")]
@@ -739,18 +544,6 @@ where
     fn depth(&self, level: u8) -> u16 {
         self.0
             .depth(virtual_hash_index(self.0.descriptor(), level, L))
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        self.0.take_first_child()
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> ReplacedChild {
-        self.0.replace_first_child(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        self.0.take_next_child()
     }
 
     #[cfg(feature = "stats")]
@@ -824,6 +617,71 @@ fn aligned_leaf_stats(descriptor: CellDescriptor) -> CellTreeStats {
     CellTreeStats {
         bit_count: descriptor.byte_len() as u64 * 8,
         cell_count: 1,
+    }
+}
+
+// === Linear deleter ===
+
+struct SafeDeleter {
+    to_delete: std::cell::RefCell<Vec<CellInner>>,
+    is_active: std::cell::Cell<bool>,
+}
+
+impl SafeDeleter {
+    fn retire(value: CellInner) {
+        thread_local! {
+            static DELETER: SafeDeleter = const {
+                SafeDeleter {
+                    to_delete: std::cell::RefCell::new(Vec::new()),
+                    is_active: std::cell::Cell::new(false),
+                }
+            };
+        }
+
+        let mut value = ManuallyDrop::new(value);
+
+        match DELETER.try_with(|deleter| {
+            // SAFETY: Value is going to be taken only once, because this
+            // closure will run only if `LocalKey` still exists.
+            let value = unsafe { ManuallyDrop::take(&mut value) };
+
+            if deleter.is_active.get() {
+                // Delay child value drop if we are already dropping some parent value.
+                deleter.to_delete.borrow_mut().push(value);
+                return;
+            }
+
+            // Activate delayed drop of children.
+            deleter.is_active.set(true);
+
+            // Drop the parent value. This will fill the `to_delete` vector
+            // with children values.
+            drop(value);
+
+            // Iterate and "drop" children.
+            loop {
+                // Take one child value.
+                let mut to_delete = deleter.to_delete.borrow_mut();
+                match to_delete.pop() {
+                    Some(value) => {
+                        // Make sure to drop the `RefMut` guard first.
+                        drop(to_delete);
+                        // "Drop" the child.
+                        drop(value);
+                    }
+                    None => break,
+                }
+            }
+
+            // Disable delayed delete.
+            deleter.is_active.set(false);
+        }) {
+            Ok(()) => {}
+            // SAFETY: `LocalKey` does not exist anymore (we are removing some other
+            // thread local SafeRc). So the closure above will not run and
+            // we are dropping the value like always.
+            Err(_) => drop(unsafe { ManuallyDrop::take(&mut value) }),
+        }
     }
 }
 

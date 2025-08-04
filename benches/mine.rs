@@ -1,3 +1,5 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tycho_types::boc::Boc;
 use tycho_types::cell::{Cell, CellBuilder, CellFamily, DynCell, HashBytes, StaticCell, Store};
@@ -201,7 +203,7 @@ fn mine_address(c: &mut Criterion) {
 
                     let res = do_mine(code_cell, &factory_addr, &wallet_addr, tokens);
                     assert_eq!(res.nonce, nonce);
-                    criterion::black_box( res);
+                    black_box( res);
                 })
             });
         });

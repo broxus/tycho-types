@@ -150,18 +150,6 @@ pub trait CellImpl {
     /// Returns cell depth for the specified level.
     fn depth(&self, level: u8) -> u16;
 
-    /// Consumes the first child during the deep drop.
-    fn take_first_child(&mut self) -> Option<Cell>;
-
-    /// Replaces the first child with the provided parent during the deep drop.
-    ///
-    /// Returns `Ok(child)` if child was successfully replaced,
-    /// `Err(parent)` otherwise.
-    fn replace_first_child(&mut self, parent: Cell) -> Result<Cell, Cell>;
-
-    /// Consumes the next child (except first) during the deep drop.
-    fn take_next_child(&mut self) -> Option<Cell>;
-
     /// Returns the sum of all bits and cells of all elements in the cell tree
     /// (including this cell).
     ///

@@ -1,4 +1,6 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tycho_types::prelude::*;
 
 fn test_uniform(c: &mut Criterion) {

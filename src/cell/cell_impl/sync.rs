@@ -195,7 +195,7 @@ impl CellContext for EmptyCellContext {
     }
 }
 
-unsafe fn make_cell(ctx: CellParts, hashes: Vec<(HashBytes, u16)>) -> Cell {
+unsafe fn make_cell(ctx: CellParts, hashes: Box<[(HashBytes, u16)]>) -> Cell {
     unsafe {
         match ctx.descriptor.cell_type() {
             CellType::PrunedBranch => {
@@ -235,7 +235,6 @@ unsafe fn make_cell(ctx: CellParts, hashes: Vec<(HashBytes, u16)>) -> Cell {
                     hashes,
                     descriptor: ctx.descriptor,
                     references: ctx.references.into_inner(),
-                    without_first: false,
                 },
                 ctx.data,
             ),

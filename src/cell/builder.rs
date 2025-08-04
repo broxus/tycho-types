@@ -1588,18 +1588,6 @@ impl CellImpl for IntermediateDataCell {
         0
     }
 
-    fn take_first_child(&mut self) -> Option<Cell> {
-        None
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> Result<Cell, Cell> {
-        Err(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        None
-    }
-
     #[cfg(feature = "stats")]
     fn stats(&self) -> CellTreeStats {
         CellTreeStats {
@@ -1661,18 +1649,6 @@ impl CellImpl for IntermediateFullCell {
 
     fn depth(&self, _: u8) -> u16 {
         0
-    }
-
-    fn take_first_child(&mut self) -> Option<Cell> {
-        None
-    }
-
-    fn replace_first_child(&mut self, parent: Cell) -> Result<Cell, Cell> {
-        Err(parent)
-    }
-
-    fn take_next_child(&mut self) -> Option<Cell> {
-        None
     }
 
     #[cfg(feature = "stats")]

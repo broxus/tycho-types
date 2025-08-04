@@ -102,11 +102,11 @@ tycho-types-abi-proc = { version = "=0.2.0", path = "abi-proc", optional = true 
 [dev-dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-criterion = "0.5"
+criterion = "0.7"
 rand_xorshift = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-iai-callgrind = "0.14"
+iai-callgrind = "0.16.1"
 paste = "1.0.15"
 
 tycho-types = { path = "./", features = ["rand9"] }
