@@ -13,7 +13,7 @@ pub use self::cell_context::{CellContext, CellParts, LoadMode};
 pub use self::cell_impl::rc::{Cell, CellInner, WeakCell};
 #[cfg(feature = "sync")]
 pub use self::cell_impl::sync::{Cell, CellInner, WeakCell};
-pub use self::cell_impl::{StaticCell, VirtualCellWrapper};
+pub use self::cell_impl::{SafeDeleter, StaticCell, VirtualCellWrapper};
 pub use self::lazy::{Lazy, LazyExotic};
 pub use self::slice::{
     CellSlice, CellSliceParts, CellSliceRange, DisplayCellSliceData, ExactSize, Load, LoadCell,

@@ -566,13 +566,16 @@ fn hash_index(descriptor: CellDescriptor, level: u8) -> u8 {
 
 // === Linear deleter ===
 
-struct SafeDeleter {
+/// Linear deleter for cell trees.
+pub struct SafeDeleter {
+    // TODO: Drop too large vector after competion?
     to_delete: std::cell::RefCell<Vec<CellInner>>,
     is_active: std::cell::Cell<bool>,
 }
 
 impl SafeDeleter {
-    fn retire(value: CellInner) {
+    /// Add cell into thread-local deleter queue.
+    pub fn retire(value: CellInner) {
         thread_local! {
             static DELETER: SafeDeleter = const {
                 SafeDeleter {
