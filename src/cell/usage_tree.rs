@@ -1,5 +1,3 @@
-#[cfg(feature = "stats")]
-use super::CellTreeStats;
 use super::cell_impl::VirtualCellWrapper;
 use super::{Cell, CellDescriptor, CellImpl, CellInner, DynCell, HashBytes};
 
@@ -159,11 +157,6 @@ impl CellImpl for UsageCell {
 
     fn depth(&self, level: u8) -> u16 {
         self.cell.depth(level)
-    }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        self.cell.stats()
     }
 }
 

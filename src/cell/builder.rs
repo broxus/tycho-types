@@ -4,8 +4,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::CellFamily;
-#[cfg(feature = "stats")]
-use super::CellTreeStats;
 use crate::cell::cell_context::{CellContext, CellParts};
 use crate::cell::{
     Cell, CellDescriptor, CellImpl, CellInner, CellSlice, CellType, DynCell, HashBytes, LevelMask,
@@ -495,21 +493,10 @@ impl CellBuilder {
         debug_assert!(self.inner.bit_len <= MAX_BIT_LEN);
         debug_assert!(self.references.len() <= MAX_REF_COUNT);
 
-        #[cfg(feature = "stats")]
-        let mut stats = CellTreeStats {
-            bit_count: self.bit_len as u64,
-            cell_count: 1,
-        };
-
         let mut children_mask = LevelMask::EMPTY;
         for child in self.references.as_ref() {
             let child = child.as_ref();
             children_mask |= child.descriptor().level_mask();
-
-            #[cfg(feature = "stats")]
-            {
-                stats += child.stats();
-            }
         }
 
         let is_exotic = self.is_exotic;
@@ -559,8 +546,6 @@ impl CellBuilder {
         let data = &self.inner.data[..std::cmp::min(byte_len as usize, 128)];
 
         let cell_parts = CellParts {
-            #[cfg(feature = "stats")]
-            stats,
             bit_len: self.inner.bit_len,
             descriptor: CellDescriptor { d1, d2 },
             children_mask,
@@ -1587,14 +1572,6 @@ impl CellImpl for IntermediateDataCell {
     fn depth(&self, _: u8) -> u16 {
         0
     }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        CellTreeStats {
-            bit_count: self.0.bit_len as u64,
-            cell_count: 1,
-        }
-    }
 }
 
 #[repr(transparent)]
@@ -1649,14 +1626,6 @@ impl CellImpl for IntermediateFullCell {
 
     fn depth(&self, _: u8) -> u16 {
         0
-    }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        CellTreeStats {
-            bit_count: self.0.bit_len as u64,
-            cell_count: 1 + self.0.references.len() as u64,
-        }
     }
 }
 

@@ -149,13 +149,6 @@ pub trait CellImpl {
 
     /// Returns cell depth for the specified level.
     fn depth(&self, level: u8) -> u16;
-
-    /// Returns the sum of all bits and cells of all elements in the cell tree
-    /// (including this cell).
-    ///
-    /// NOTE: identical cells are counted each time they occur in the tree.
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats;
 }
 
 impl DynCell {

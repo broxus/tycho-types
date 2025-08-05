@@ -3,8 +3,6 @@ use std::ops::Deref;
 use smallvec::SmallVec;
 
 use super::BocTag;
-#[cfg(feature = "stats")]
-use crate::cell::CellTreeStats;
 use crate::cell::{Cell, CellContext, CellDescriptor, CellParts, LevelMask, MAX_REF_COUNT};
 use crate::util::{ArrayVec, read_be_u32_fast, read_be_u64_fast, unlikely};
 
@@ -427,12 +425,6 @@ impl<'a> CellParts<'a> {
             let mut references = ArrayVec::<Cell, MAX_REF_COUNT>::default();
             let mut children_mask = LevelMask::EMPTY;
 
-            #[cfg(feature = "stats")]
-            let mut stats = CellTreeStats {
-                bit_count: bit_len as u64,
-                cell_count: 1,
-            };
-
             for _ in 0..descriptor.reference_count() {
                 let child_index = read_be_u32_fast(data_ptr, ref_size);
                 if child_index >= cell_count {
@@ -444,22 +436,14 @@ impl<'a> CellParts<'a> {
                     None => return Err(Error::InvalidRefOrder),
                 };
 
-                {
-                    let child = child.as_ref();
-                    children_mask |= child.descriptor().level_mask();
-                    #[cfg(feature = "stats")]
-                    {
-                        stats += child.stats();
-                    }
-                }
+                children_mask |= child.descriptor().level_mask();
+
                 references.push(child);
 
                 data_ptr = data_ptr.add(ref_size);
             }
 
             Ok(CellParts {
-                #[cfg(feature = "stats")]
-                stats,
                 bit_len,
                 descriptor,
                 children_mask,

@@ -1,7 +1,5 @@
 use sha2::digest::Digest;
 
-#[cfg(feature = "stats")]
-use crate::cell::CellTreeStats;
 use crate::cell::{Cell, CellDescriptor, CellType, DynCell, HashBytes, LevelMask, MAX_REF_COUNT};
 use crate::error::Error;
 use crate::util::{ArrayVec, unlikely};
@@ -52,10 +50,6 @@ impl LoadMode {
 
 /// Partially assembled cell.
 pub struct CellParts<'a> {
-    /// Cell tree storage stats.
-    #[cfg(feature = "stats")]
-    pub stats: CellTreeStats,
-
     /// Length of this cell's data in bits.
     pub bit_len: u16,
 

@@ -230,8 +230,6 @@ unsafe fn make_cell(ctx: CellParts, hashes: Box<[(HashBytes, u16)]>) -> Cell {
             _ => make_ordinary_cell(
                 OrdinaryCellHeader {
                     bit_len: ctx.bit_len,
-                    #[cfg(feature = "stats")]
-                    stats: ctx.stats,
                     hashes,
                     descriptor: ctx.descriptor,
                     references: ctx.references.into_inner(),

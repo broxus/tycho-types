@@ -1,8 +1,6 @@
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
 
-#[cfg(feature = "stats")]
-use super::CellTreeStats;
 use super::{
     Cell, CellDescriptor, CellFamily, CellImpl, CellInner, DynCell, EMPTY_CELL_HASH, HashBytes,
     MAX_REF_COUNT,
@@ -75,14 +73,6 @@ impl CellImpl for EmptyOrdinaryCell {
     fn depth(&self, _: u8) -> u16 {
         0
     }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        CellTreeStats {
-            bit_count: 0,
-            cell_count: 1,
-        }
-    }
 }
 
 /// Static cell which can be used to create cell references in const context.
@@ -150,14 +140,6 @@ impl CellImpl for StaticCell {
     fn depth(&self, _: u8) -> u16 {
         0
     }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        CellTreeStats {
-            bit_count: self.bit_len as u64,
-            cell_count: 1,
-        }
-    }
 }
 
 pub(crate) static ALL_ZEROS_CELL: StaticCell = StaticCell {
@@ -201,8 +183,6 @@ type OrdinaryCell<const N: usize> = HeaderWithData<OrdinaryCellHeader, N>;
 
 struct OrdinaryCellHeader {
     bit_len: u16,
-    #[cfg(feature = "stats")]
-    stats: CellTreeStats,
     hashes: Box<[(HashBytes, u16)]>,
     descriptor: CellDescriptor,
     references: [MaybeUninit<Cell>; MAX_REF_COUNT],
@@ -289,11 +269,6 @@ impl<const N: usize> CellImpl for OrdinaryCell<N> {
     fn depth(&self, level: u8) -> u16 {
         self.header.level_descr(level).1
     }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        self.header.stats
-    }
 }
 
 struct LibraryReference {
@@ -342,14 +317,6 @@ impl CellImpl for LibraryReference {
 
     fn depth(&self, _: u8) -> u16 {
         0
-    }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        CellTreeStats {
-            bit_count: LibraryReference::BIT_LEN as u64,
-            cell_count: 1,
-        }
     }
 }
 
@@ -430,11 +397,6 @@ impl<const N: usize> CellImpl for PrunedBranch<N> {
             u16::from_be_bytes(unsafe { *(data_ptr.add(offset) as *const [u8; 2]) })
         }
     }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        aligned_leaf_stats(self.header.descriptor)
-    }
 }
 
 #[repr(transparent)]
@@ -482,11 +444,6 @@ where
     fn depth(&self, level: u8) -> u16 {
         let cell = self.0.as_ref();
         cell.depth(virtual_hash_index(cell.descriptor(), level, 0))
-    }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        self.0.as_ref().stats()
     }
 }
 
@@ -544,11 +501,6 @@ where
     fn depth(&self, level: u8) -> u16 {
         self.0
             .depth(virtual_hash_index(self.0.descriptor(), level, L))
-    }
-
-    #[cfg(feature = "stats")]
-    fn stats(&self) -> CellTreeStats {
-        self.0.stats()
     }
 }
 
@@ -610,14 +562,6 @@ fn virtual_hash_index(descriptor: CellDescriptor, level: u8, offset: u8) -> u8 {
 
 fn hash_index(descriptor: CellDescriptor, level: u8) -> u8 {
     descriptor.level_mask().hash_index(level)
-}
-
-#[cfg(feature = "stats")]
-fn aligned_leaf_stats(descriptor: CellDescriptor) -> CellTreeStats {
-    CellTreeStats {
-        bit_count: descriptor.byte_len() as u64 * 8,
-        cell_count: 1,
-    }
 }
 
 // === Linear deleter ===
