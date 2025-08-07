@@ -350,7 +350,8 @@ mod sync {
     impl UsageCell {
         pub fn new(cell: Cell, usage_tree: Weak<UsageTreeState>, mode: UsageTreeMode) -> Self {
             Self {
-                cell,
+                // NOTE: Untrack loaded cell to prevent its `UsageTree`s from stacking.
+                cell: Cell::untrack(cell),
                 usage_tree,
                 reference_states: [(); 4].map(|_| Once::new()),
                 reference_data: [(); 4].map(|_| UnsafeCell::new(None)),
