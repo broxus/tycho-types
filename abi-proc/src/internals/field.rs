@@ -41,26 +41,25 @@ pub struct FieldAttributes {
 
 impl FieldAttributes {
     pub fn check(&self) -> Result<(), Error> {
-        if let Some(path) = &self.mod_handler {
-            if self.with_handlers.into_abi_handler.is_some()
-                && self.with_handlers.from_abi_handler.is_some()
-                && self.with_handlers.as_abi_handler.is_some()
-                && self.with_handlers.abi_type_handler.is_some()
-            {
-                return Err(Error::new_spanned(
-                    path,
-                    "`with` parameter should not be used simultaneously with other handling parameters",
-                ));
-            }
+        if let Some(path) = &self.mod_handler
+            && self.with_handlers.into_abi_handler.is_some()
+            && self.with_handlers.from_abi_handler.is_some()
+            && self.with_handlers.as_abi_handler.is_some()
+            && self.with_handlers.abi_type_handler.is_some()
+        {
+            return Err(Error::new_spanned(
+                path,
+                "all `with` module methods are shadowed by explicit attributes",
+            ));
         }
 
-        if let Some(path) = &self.with_handlers.into_abi_handler {
-            if self.with_handlers.as_abi_handler.is_none() {
-                return Err(Error::new_spanned(
-                    path,
-                    "`into_abi_with` also requires `as_abi_with`",
-                ));
-            }
+        if let Some(path) = &self.with_handlers.into_abi_handler
+            && self.with_handlers.as_abi_handler.is_none()
+        {
+            return Err(Error::new_spanned(
+                path,
+                "`into_abi_with` also requires `as_abi_with`",
+            ));
         }
 
         Ok(())

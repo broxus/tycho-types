@@ -328,11 +328,11 @@ impl<'a> Load<'a> for VarUint248 {
         let mut bytes = ok!(slice.load_small_uint(Self::LEN_BITS));
 
         let mut hi: u128 = 0;
-        if let Some(high_bytes) = bytes.checked_sub(16) {
-            if high_bytes > 0 {
-                hi = ok!(super::load_u128(slice, high_bytes));
-                bytes -= high_bytes;
-            }
+        if let Some(high_bytes) = bytes.checked_sub(16)
+            && high_bytes > 0
+        {
+            hi = ok!(super::load_u128(slice, high_bytes));
+            bytes -= high_bytes;
         }
 
         match super::load_u128(slice, bytes) {

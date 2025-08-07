@@ -480,10 +480,11 @@ impl IterStackItem {
         debug_assert!(!stack.is_empty());
 
         // Fast check if the iterator was already finished.
-        if let Some(last) = stack.last() {
-            if stack.len() == 1 && last.state == Self::STATE_USED_FULL {
-                return Ok(SeekState::NotFound { remaining_key: key });
-            }
+        if let Some(last) = stack.last()
+            && stack.len() == 1
+            && last.state == Self::STATE_USED_FULL
+        {
+            return Ok(SeekState::NotFound { remaining_key: key });
         }
 
         // At this point `iter_stack` contains the path to the `prev_key`.

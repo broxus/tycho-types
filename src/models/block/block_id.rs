@@ -57,21 +57,20 @@ impl FromStr for BlockId {
         };
 
         let shard = 'shard: {
-            if let Some(prefix) = parts.next() {
-                if let Ok(prefix) = u64::from_str_radix(prefix, 16) {
-                    if let Some(shard) = ShardIdent::new(workchain, prefix) {
-                        break 'shard shard;
-                    }
-                }
+            if let Some(prefix) = parts.next()
+                && let Ok(prefix) = u64::from_str_radix(prefix, 16)
+                && let Some(shard) = ShardIdent::new(workchain, prefix)
+            {
+                break 'shard shard;
             }
             return Err(ParseBlockIdError::InvalidShardIdent);
         };
 
         let seqno = 'seqno: {
-            if let Some(seqno) = parts.next() {
-                if let Ok(seqno) = seqno.parse::<u32>() {
-                    break 'seqno seqno;
-                }
+            if let Some(seqno) = parts.next()
+                && let Ok(seqno) = seqno.parse::<u32>()
+            {
+                break 'seqno seqno;
             }
             return Err(ParseBlockIdError::InvalidSeqno);
         };
@@ -83,19 +82,19 @@ impl FromStr for BlockId {
         };
 
         'hash: {
-            if let Some(hash) = parts.next() {
-                if hex::decode_to_slice(hash, &mut result.root_hash.0).is_ok() {
-                    break 'hash;
-                }
+            if let Some(hash) = parts.next()
+                && hex::decode_to_slice(hash, &mut result.root_hash.0).is_ok()
+            {
+                break 'hash;
             }
             return Err(ParseBlockIdError::InvalidRootHash);
         }
 
         'hash: {
-            if let Some(hash) = parts.next() {
-                if hex::decode_to_slice(hash, &mut result.file_hash.0).is_ok() {
-                    break 'hash;
-                }
+            if let Some(hash) = parts.next()
+                && hex::decode_to_slice(hash, &mut result.file_hash.0).is_ok()
+            {
+                break 'hash;
             }
             return Err(ParseBlockIdError::InvalidFileHash);
         }
@@ -511,12 +510,11 @@ impl FromStr for ShardIdent {
         };
 
         let shard = 'shard: {
-            if let Some(prefix) = parts.next() {
-                if let Ok(prefix) = u64::from_str_radix(prefix, 16) {
-                    if let Some(shard) = ShardIdent::new(workchain, prefix) {
-                        break 'shard shard;
-                    }
-                }
+            if let Some(prefix) = parts.next()
+                && let Ok(prefix) = u64::from_str_radix(prefix, 16)
+                && let Some(shard) = ShardIdent::new(workchain, prefix)
+            {
+                break 'shard shard;
             }
             return Err(ParseBlockIdError::InvalidShardIdent);
         };

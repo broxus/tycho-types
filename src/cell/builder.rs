@@ -503,17 +503,18 @@ impl CellBuilder {
 
         let level_mask = 'mask: {
             // NOTE: make only a brief check here, as it will raise a proper error in finalier
-            if is_exotic && self.inner.bit_len >= 8 {
-                if let Some(ty) = CellType::from_byte_exotic(self.data[0]) {
-                    match ty {
-                        CellType::PrunedBranch => break 'mask LevelMask::new(self.data[1]),
-                        CellType::MerkleProof | CellType::MerkleUpdate => {
-                            break 'mask children_mask.virtualize(1);
-                        }
-                        CellType::LibraryReference => break 'mask LevelMask::EMPTY,
-                        _ => {}
-                    };
-                }
+            if is_exotic
+                && self.inner.bit_len >= 8
+                && let Some(ty) = CellType::from_byte_exotic(self.data[0])
+            {
+                match ty {
+                    CellType::PrunedBranch => break 'mask LevelMask::new(self.data[1]),
+                    CellType::MerkleProof | CellType::MerkleUpdate => {
+                        break 'mask children_mask.virtualize(1);
+                    }
+                    CellType::LibraryReference => break 'mask LevelMask::EMPTY,
+                    _ => {}
+                };
             }
 
             children_mask
@@ -1112,20 +1113,16 @@ impl CellDataBuilder {
                     *data_ptr |= (value >> (64 - shift)) as u8;
 
                     // If there are some bits left
-                    if let Some(bits) = bits.checked_sub(shift) {
-                        if bits > 0 {
-                            let byte_len = bits.div_ceil(8) as usize;
-                            debug_assert!(q + 1 + byte_len <= 128);
+                    if let Some(bits) = bits.checked_sub(shift)
+                        && bits > 0
+                    {
+                        let byte_len = bits.div_ceil(8) as usize;
+                        debug_assert!(q + 1 + byte_len <= 128);
 
-                            // Make shifted bytes
-                            let value: [u8; 8] = (value << shift).to_be_bytes();
-                            // Write shifted bytes
-                            std::ptr::copy_nonoverlapping(
-                                value.as_ptr(),
-                                data_ptr.add(1),
-                                byte_len,
-                            );
-                        }
+                        // Make shifted bytes
+                        let value: [u8; 8] = (value << shift).to_be_bytes();
+                        // Write shifted bytes
+                        std::ptr::copy_nonoverlapping(value.as_ptr(), data_ptr.add(1), byte_len);
                     }
                 }
             }

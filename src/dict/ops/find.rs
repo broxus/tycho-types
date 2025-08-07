@@ -94,37 +94,35 @@ pub fn dict_find_owned(
     };
 
     // Return a value with the exact key
-    if inclusive {
-        if let Leaf::Value(value_range) = value_range {
-            let cell = match stack.last() {
-                Some(Segment {
-                    data, next_branch, ..
-                }) => match data.reference_cloned(*next_branch as u8) {
-                    Some(cell) => ok!(context.load_cell(cell, LoadMode::Resolve)),
-                    None => return Err(Error::CellUnderflow),
-                },
-                None => root,
-            };
+    if inclusive && let Leaf::Value(value_range) = value_range {
+        let cell = match stack.last() {
+            Some(Segment {
+                data, next_branch, ..
+            }) => match data.reference_cloned(*next_branch as u8) {
+                Some(cell) => ok!(context.load_cell(cell, LoadMode::Resolve)),
+                None => return Err(Error::CellUnderflow),
+            },
+            None => root,
+        };
 
-            let original_key = ok!(original_key_range.apply(key.cell()));
-            ok!(result_key.store_slice_data(original_key));
+        let original_key = ok!(original_key_range.apply(key.cell()));
+        ok!(result_key.store_slice_data(original_key));
 
-            return Ok(Some((result_key, (value_range, cell))));
-        }
+        return Ok(Some((result_key, (value_range, cell))));
     }
 
     // Rewind back to the divergent branch
     let rev_direction = towards.into_branch().reversed();
     let (mut data, mut remaining_bits, first_branch) = 'fork: {
-        if let Leaf::Divergence(next_branch) = value_range {
-            if next_branch == rev_direction {
-                // Skip rewinding if the key diverged towards the opposite direction.
-                let remaining_bits = key.size_bits();
-                let prefix_len = key_bit_len - remaining_bits;
-                original_key_range = original_key_range.get_prefix(prefix_len, 0);
-                let _compatibility_gas = ok!(context.load_dyn_cell(data, LoadMode::UseGas));
-                break 'fork (data, remaining_bits, None);
-            }
+        if let Leaf::Divergence(next_branch) = value_range
+            && next_branch == rev_direction
+        {
+            // Skip rewinding if the key diverged towards the opposite direction.
+            let remaining_bits = key.size_bits();
+            let prefix_len = key_bit_len - remaining_bits;
+            original_key_range = original_key_range.get_prefix(prefix_len, 0);
+            let _compatibility_gas = ok!(context.load_dyn_cell(data, LoadMode::UseGas));
+            break 'fork (data, remaining_bits, None);
         }
 
         while let Some(Segment {

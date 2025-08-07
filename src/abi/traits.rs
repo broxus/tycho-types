@@ -1066,10 +1066,10 @@ impl FromPlainAbi for IntAddr {
 
 impl FromAbi for StdAddr {
     fn from_abi(value: AbiValue) -> Result<Self> {
-        if let AbiValue::Address(address) = &value {
-            if let IntAddr::Std(address) = address.as_ref() {
-                return Ok(address.clone());
-            }
+        if let AbiValue::Address(address) = &value
+            && let IntAddr::Std(address) = address.as_ref()
+        {
+            return Ok(address.clone());
         }
         Err(expected_type("std address", &value))
     }
@@ -1077,10 +1077,10 @@ impl FromAbi for StdAddr {
 
 impl FromPlainAbi for StdAddr {
     fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
-        if let PlainAbiValue::Address(address) = &value {
-            if let IntAddr::Std(address) = address.as_ref() {
-                return Ok(address.clone());
-            }
+        if let PlainAbiValue::Address(address) = &value
+            && let IntAddr::Std(address) = address.as_ref()
+        {
+            return Ok(address.clone());
         }
         Err(expected_plain_type("std address", &value))
     }
@@ -1088,10 +1088,10 @@ impl FromPlainAbi for StdAddr {
 
 impl FromAbi for VarAddr {
     fn from_abi(value: AbiValue) -> Result<Self> {
-        if let AbiValue::Address(address) = &value {
-            if let IntAddr::Var(address) = address.as_ref() {
-                return Ok(address.clone());
-            }
+        if let AbiValue::Address(address) = &value
+            && let IntAddr::Var(address) = address.as_ref()
+        {
+            return Ok(address.clone());
         }
         Err(expected_type("var address", &value))
     }
@@ -1099,10 +1099,10 @@ impl FromAbi for VarAddr {
 
 impl FromPlainAbi for VarAddr {
     fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
-        if let PlainAbiValue::Address(address) = &value {
-            if let IntAddr::Var(address) = address.as_ref() {
-                return Ok(address.clone());
-            }
+        if let PlainAbiValue::Address(address) = &value
+            && let IntAddr::Var(address) = address.as_ref()
+        {
+            return Ok(address.clone());
         }
         Err(expected_plain_type("var address", &value))
     }
@@ -1179,10 +1179,10 @@ impl<T: FromAbi> FromAbi for Option<T> {
 
 impl FromAbi for () {
     fn from_abi(value: AbiValue) -> Result<Self> {
-        if let AbiValue::Tuple(items) = &value {
-            if items.is_empty() {
-                return Ok(());
-            }
+        if let AbiValue::Tuple(items) = &value
+            && items.is_empty()
+        {
+            return Ok(());
         }
         Err(expected_type("()", &value))
     }

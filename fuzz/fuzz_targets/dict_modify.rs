@@ -13,7 +13,7 @@ where
 {
     let ctx = Cell::empty_context();
 
-    let initial = dict::build_dict_from_sorted_iter(input.initial_items.into_iter(), ctx).unwrap();
+    let initial = dict::build_dict_from_sorted_iter(input.initial_items, ctx).unwrap();
 
     // Build manually
     let mut target = initial.clone();

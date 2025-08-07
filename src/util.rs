@@ -29,10 +29,10 @@ impl BigIntExt for num_bigint::BigInt {
                 num_bigint::Sign::Minus => {
                     // Check if `int` magnitude is not a power of 2
                     let mut digits = self.iter_u64_digits().rev();
-                    if let Some(hi) = digits.next() {
-                        if !hi.is_power_of_two() || !digits.all(|digit| digit == 0) {
-                            bits += 1;
-                        }
+                    if let Some(hi) = digits.next()
+                        && (!hi.is_power_of_two() || !digits.all(|digit| digit == 0))
+                    {
+                        bits += 1;
                     }
                     bits
                 }
@@ -382,11 +382,11 @@ impl Bitstring<'_> {
         };
 
         let mut half_byte = None;
-        if s.len() % 2 != 0 {
-            if let Some((last, prefix)) = s.split_last() {
-                half_byte = Some(ok!(hex_char(*last)));
-                s = prefix;
-            }
+        if s.len() % 2 != 0
+            && let Some((last, prefix)) = s.split_last()
+        {
+            half_byte = Some(ok!(hex_char(*last)));
+            s = prefix;
         }
 
         let Ok(mut data) = hex::decode(s) else {

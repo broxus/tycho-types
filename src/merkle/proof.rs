@@ -661,6 +661,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                         // All other cells will be included in a different branch
                         _ => 'cell: {
                             if let Some(scope) = scope {
+                                #[allow(clippy::collapsible_if)]
                                 if unlikely(self.split_at.contains(child_repr_hash)) {
                                     let promise = Promise::new();
                                     let parent_merkle_depth = last.merkle_depth;

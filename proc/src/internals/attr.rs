@@ -20,10 +20,10 @@ impl Container {
                 continue;
             }
 
-            if let syn::Meta::List(meta) = &attr.meta {
-                if meta.tokens.is_empty() {
-                    continue;
-                }
+            if let syn::Meta::List(meta) = &attr.meta
+                && meta.tokens.is_empty()
+            {
+                continue;
             }
 
             if let Err(e) = attr.parse_nested_meta(|meta| {
@@ -63,10 +63,10 @@ impl Variant {
                 continue;
             }
 
-            if let syn::Meta::List(meta) = &attr.meta {
-                if meta.tokens.is_empty() {
-                    continue;
-                }
+            if let syn::Meta::List(meta) = &attr.meta
+                && meta.tokens.is_empty()
+            {
+                continue;
             }
 
             if let Err(e) = attr.parse_nested_meta(|meta| {
@@ -96,10 +96,10 @@ impl Field {
                 continue;
             }
 
-            if let syn::Meta::List(meta) = &attr.meta {
-                if meta.tokens.is_empty() {
-                    continue;
-                }
+            if let syn::Meta::List(meta) = &attr.meta
+                && meta.tokens.is_empty()
+            {
+                continue;
             }
 
             if let Err(e) = attr.parse_nested_meta(|meta| {

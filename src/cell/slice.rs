@@ -1742,20 +1742,20 @@ impl<'a> CellSlice<'a> {
 
     /// Returns a reference to the Nth child cell (relative to this slice's refs window).
     pub fn get_reference(&self, index: u8) -> Result<&'a DynCell, Error> {
-        if self.range.refs_start + index < self.range.refs_end {
-            if let Some(cell) = self.cell.reference(self.range.refs_start + index) {
-                return Ok(cell);
-            }
+        if self.range.refs_start + index < self.range.refs_end
+            && let Some(cell) = self.cell.reference(self.range.refs_start + index)
+        {
+            return Ok(cell);
         }
         Err(Error::CellUnderflow)
     }
 
     /// Returns the Nth child cell (relative to this slice's refs window).
     pub fn get_reference_cloned(&self, index: u8) -> Result<Cell, Error> {
-        if self.range.refs_start + index < self.range.refs_end {
-            if let Some(cell) = self.cell.reference_cloned(self.range.refs_start + index) {
-                return Ok(cell);
-            }
+        if self.range.refs_start + index < self.range.refs_end
+            && let Some(cell) = self.cell.reference_cloned(self.range.refs_start + index)
+        {
+            return Ok(cell);
         }
         Err(Error::CellUnderflow)
     }

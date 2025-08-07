@@ -372,7 +372,7 @@ impl MerkleUpdate {
                     let child_hash = cell.as_ref().hash(mask.level() - 1);
                     match self.old_cells.get(child_hash) {
                         Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
-                        None => return Err(Error::InvalidData),
+                        None => Err(Error::InvalidData),
                     }
                 } else {
                     Ok(ExtCell::Ordinary(cell))
@@ -393,19 +393,20 @@ impl MerkleUpdate {
                     return Ok(child.clone());
                 }
 
-                if let Some(scope) = scope {
-                    if traverse_depth > ROOT_SPLIT_DEPTH && cell.repr_depth() > CHILD_SPLIT_DEPTH {
-                        let promise = Promise::new();
-                        scope.spawn({
-                            let promise = promise.clone();
-                            move |_| {
-                                let result =
-                                    self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
-                                promise.set(result);
-                            }
-                        });
-                        return Ok(ExtCell::Deferred(promise));
-                    }
+                if let Some(scope) = scope
+                    && traverse_depth > ROOT_SPLIT_DEPTH
+                    && cell.repr_depth() > CHILD_SPLIT_DEPTH
+                {
+                    let promise = Promise::new();
+                    scope.spawn({
+                        let promise = promise.clone();
+                        move |_| {
+                            let result =
+                                self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
+                            promise.set(result);
+                        }
+                    });
+                    return Ok(ExtCell::Deferred(promise));
                 }
 
                 let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
@@ -415,6 +416,7 @@ impl MerkleUpdate {
         }
 
         // Finds original old cell roots by their hashes.
+        #[allow(clippy::too_many_arguments)]
         fn find_old_subtrees<'a, 's>(
             cell_ref: &'a DynCell,
             cell: Cell,
@@ -438,22 +440,22 @@ impl MerkleUpdate {
             'outer: while let Some(iter) = stack.last_mut() {
                 let cloned = iter.clone().cloned();
                 for (cell_ref, cell) in std::iter::zip(&mut *iter, cloned) {
-                    if let Some(scope) = scope {
-                        if split_at.contains(cell.repr_hash()) {
-                            scope.spawn(move |_| {
-                                find_old_subtrees(
-                                    cell_ref,
-                                    cell,
-                                    merkle_depth,
-                                    None,
-                                    split_at,
-                                    visited,
-                                    old_cells,
-                                    old_cell_hashes,
-                                );
-                            });
-                            continue;
-                        }
+                    if let Some(scope) = scope
+                        && split_at.contains(cell.repr_hash())
+                    {
+                        scope.spawn(move |_| {
+                            find_old_subtrees(
+                                cell_ref,
+                                cell,
+                                merkle_depth,
+                                None,
+                                split_at,
+                                visited,
+                                old_cells,
+                                old_cell_hashes,
+                            );
+                        });
+                        continue;
                     }
 
                     if !visited.insert(cell_ref.repr_hash()) {
@@ -736,20 +738,20 @@ impl MerkleUpdate {
                 for child in &mut *iter {
                     let child_hash = child.repr_hash();
 
-                    if let Some(scope) = scope {
-                        if split_at.contains(child_hash) {
-                            scope.spawn(move |_| {
-                                traverse_old_cells(
-                                    child,
-                                    merkle_depth,
-                                    None,
-                                    split_at,
-                                    visited,
-                                    old_cells,
-                                );
-                            });
-                            continue;
-                        }
+                    if let Some(scope) = scope
+                        && split_at.contains(child_hash)
+                    {
+                        scope.spawn(move |_| {
+                            traverse_old_cells(
+                                child,
+                                merkle_depth,
+                                None,
+                                split_at,
+                                visited,
+                                old_cells,
+                            );
+                        });
+                        continue;
                     }
 
                     if !visited.insert(child.repr_hash()) {
@@ -815,22 +817,21 @@ impl MerkleUpdate {
             let mut traverse_depth = 1usize;
             'outer: while let Some(iter) = stack.last_mut() {
                 for child in &mut *iter {
-                    if let Some(scope) = scope {
-                        if traverse_depth > ROOT_SPLIT_DEPTH as usize
-                            && child.repr_depth() > CHILD_SPLIT_DEPTH
-                        {
-                            scope.spawn(move |_| {
-                                traverse_new_cells(
-                                    child,
-                                    merkle_depth,
-                                    None,
-                                    visited,
-                                    old_cells,
-                                    is_invalid,
-                                );
-                            });
-                            continue;
-                        }
+                    if let Some(scope) = scope
+                        && traverse_depth > ROOT_SPLIT_DEPTH as usize
+                        && child.repr_depth() > CHILD_SPLIT_DEPTH
+                    {
+                        scope.spawn(move |_| {
+                            traverse_new_cells(
+                                child,
+                                merkle_depth,
+                                None,
+                                visited,
+                                old_cells,
+                                is_invalid,
+                            );
+                        });
+                        continue;
                     }
 
                     // Skip visited cells
@@ -1224,6 +1225,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                 }
 
                 if let Some(scope) = scope {
+                    #[allow(clippy::collapsible_if)]
                     if unlikely(self.split_at.contains(repr_hash)) {
                         let entry = match self.resolver.deferred.entry(repr_hash) {
                             dashmap::Entry::Occupied(entry) => {
@@ -1388,6 +1390,11 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
         })
     }
 }
+
+#[cfg(all(feature = "rayon", feature = "sync"))]
+const ROOT_SPLIT_DEPTH: u16 = 3;
+#[cfg(all(feature = "rayon", feature = "sync"))]
+const CHILD_SPLIT_DEPTH: u16 = 5;
 
 #[cfg(test)]
 mod tests {
@@ -1634,8 +1641,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(all(feature = "rayon", feature = "sync"))]
-const ROOT_SPLIT_DEPTH: u16 = 3;
-#[cfg(all(feature = "rayon", feature = "sync"))]
-const CHILD_SPLIT_DEPTH: u16 = 5;

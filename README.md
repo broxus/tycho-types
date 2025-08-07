@@ -4,8 +4,8 @@
 [crates-io-link]: https://crates.io/crates/tycho-types
 [docs-badge]: https://docs.rs/tycho-types/badge.svg
 [docs-url]: https://docs.rs/tycho-types
-[rust-version-badge]: https://img.shields.io/badge/rustc-1.85+-lightgray.svg
-[rust-version-link]: https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.88+-lightgray.svg
+[rust-version-link]: https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/
 [workflow-badge]: https://img.shields.io/github/actions/workflow/status/broxus/tycho-types/master.yml?branch=master
 [workflow-link]: https://github.com/broxus/tycho-types/actions?query=workflow%3Amaster
 

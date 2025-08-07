@@ -1474,10 +1474,10 @@ mod tests {
             builder: &mut CellBuilder,
         ) -> anyhow::Result<()> {
             let (left_shard_ident, right_shard_ident) = 'split: {
-                if depth > 0 {
-                    if let Some((left, right)) = shard.split() {
-                        break 'split (left, right);
-                    }
+                if depth > 0
+                    && let Some((left, right)) = shard.split()
+                {
+                    break 'split (left, right);
                 }
                 shards.insert(shard.prefix(), accounts.clone());
                 return Ok(());

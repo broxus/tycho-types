@@ -1046,11 +1046,11 @@ fn store_u128(builder: &mut CellBuilder, value: u128, mut bits: u16) -> Result<(
 
 fn load_u128(slice: &mut CellSlice<'_>, mut bytes: u8) -> Result<u128, Error> {
     let mut result: u128 = 0;
-    if let Some(high_bytes) = bytes.checked_sub(8) {
-        if high_bytes > 0 {
-            result = (ok!(slice.load_uint(high_bytes as u16 * 8)) as u128) << 64;
-            bytes -= high_bytes;
-        }
+    if let Some(high_bytes) = bytes.checked_sub(8)
+        && high_bytes > 0
+    {
+        result = (ok!(slice.load_uint(high_bytes as u16 * 8)) as u128) << 64;
+        bytes -= high_bytes;
     }
 
     match slice.load_uint(bytes as u16 * 8) {

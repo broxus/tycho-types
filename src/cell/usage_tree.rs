@@ -398,12 +398,11 @@ mod sync {
 
                 // SAFETY: `UnsafeCell` data is controlled by the `Once` state.
                 let child = unsafe { &*self.reference_data[index as usize].get().cast_const() };
-                if crate::util::unlikely(should_insert) {
-                    if let Some(child) = child {
-                        if let Some(usage_tree) = self.usage_tree.upgrade() {
-                            usage_tree.insert(&child.cell);
-                        }
-                    }
+                if crate::util::unlikely(should_insert)
+                    && let Some(child) = child
+                    && let Some(usage_tree) = self.usage_tree.upgrade()
+                {
+                    usage_tree.insert(&child.cell);
                 }
 
                 child.as_ref()

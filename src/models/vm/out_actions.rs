@@ -348,10 +348,10 @@ impl<'a> arbitrary::Arbitrary<'a> for OutAction {
                 mode: u.arbitrary()?,
                 lib: {
                     let lib = u.arbitrary()?;
-                    if let LibRef::Cell(code) = &lib {
-                        if code.level() != 0 {
-                            return Err(arbitrary::Error::IncorrectFormat);
-                        }
+                    if let LibRef::Cell(code) = &lib
+                        && code.level() != 0
+                    {
+                        return Err(arbitrary::Error::IncorrectFormat);
                     }
                     lib
                 },

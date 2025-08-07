@@ -18,8 +18,7 @@ where
         let ctx = Cell::empty_context();
 
         let initial =
-            dict::build_aug_dict_from_sorted_iter(self.initial_items.into_iter(), A::comp_add, ctx)
-                .unwrap();
+            dict::build_aug_dict_from_sorted_iter(self.initial_items, A::comp_add, ctx).unwrap();
 
         // Build manually
         let mut target = initial.clone();

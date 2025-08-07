@@ -129,10 +129,10 @@ impl<'a> BocHeader<'a> {
         if unlikely(absent_count > 0) {
             return Err(Error::AbsentCellsNotSupported);
         }
-        if let Some(min_roots) = options.min_roots {
-            if unlikely(root_count < min_roots) {
-                return Err(Error::TooFewRootCells);
-            }
+        if let Some(min_roots) = options.min_roots
+            && unlikely(root_count < min_roots)
+        {
+            return Err(Error::TooFewRootCells);
         }
 
         {
