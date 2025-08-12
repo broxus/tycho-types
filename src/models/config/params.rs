@@ -656,6 +656,7 @@ impl<'a> Load<'a> for CatchainConfig {
 /// collation_config_tycho#a6
 ///     shuffle_mc_validators:Bool
 ///     mc_block_min_interval_ms:uint32
+///     empty_sc_block_interval_ms:uint32
 ///     max_uncommitted_chain_length:uint8
 ///     wu_used_to_import_next_anchor:uint64
 ///     msgs_exec_params:MsgsExecutionParams
@@ -665,6 +666,7 @@ impl<'a> Load<'a> for CatchainConfig {
 /// collation_config_tycho#a7
 ///     shuffle_mc_validators:Bool
 ///     mc_block_min_interval_ms:uint32
+///     mc_block_max_interval_ms:uint32
 ///     empty_sc_block_interval_ms:uint32
 ///     max_uncommitted_chain_length:uint8
 ///     wu_used_to_import_next_anchor:uint64
@@ -674,7 +676,7 @@ impl<'a> Load<'a> for CatchainConfig {
 /// ```
 #[cfg(feature = "tycho")]
 #[derive(Debug, Clone, Eq, PartialEq, Store, Load, Default)]
-#[tlb(tag = "#a6")]
+#[tlb(tag = ["#a6", "#a7"])]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CollationConfig {
     /// Change the order of validators in the masterchain validators list.
@@ -682,6 +684,10 @@ pub struct CollationConfig {
 
     /// Minimum interval between master blocks.
     pub mc_block_min_interval_ms: u32,
+
+    /// Maximum interval between master blocks.
+    #[tlb(since_tag = 1)]
+    pub mc_block_max_interval_ms: u32,
 
     /// Time to wait before collating an empty shard block.
     pub empty_sc_block_interval_ms: u32,
