@@ -507,9 +507,22 @@ impl BlockchainConfigParams {
         ok!(self.get::<ConfigParam43>()).ok_or(Error::CellUnderflow)
     }
 
-    /// Updates a global id.
+    /// Updates size limits.
     pub fn set_size_limits(&mut self, size_limits: &SizeLimitsConfig) -> Result<bool, Error> {
         self.set_raw(ConfigParam43::ID, ok!(CellBuilder::build_from(size_limits)))
+    }
+
+    /// Returns authority params.
+    pub fn get_authority_params(&self) -> Result<AuthorityParams, Error> {
+        ok!(self.get::<ConfigParam100>()).ok_or(Error::CellUnderflow)
+    }
+
+    /// Updates authority params.
+    pub fn set_authority_params(&mut self, params: AuthorityParams) -> Result<bool, Error> {
+        self.set_raw(
+            ConfigParam100::ID,
+            ok!(CellBuilder::build_from(params)),
+        )
     }
 
     /// Returns `true` if the config contains a param for the specified id.
@@ -1132,6 +1145,13 @@ define_config_params! {
     /// Contains a [`MintOnceConfig`].
     #[serde(transparent)]
     50 => ConfigParam50(MintOnceConfig),
+
+    /// Authority params
+    ///
+    /// Contains dictionary with special addresses (in masterchain) which can mark other accounts
+    /// and system marks currency IDs.
+    #[serde(transparent)]
+    100 => ConfigParam100(AuthorityParams),
 }
 
 #[cfg(feature = "serde")]
