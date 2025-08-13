@@ -73,6 +73,18 @@ pub struct MintOnceConfig {
     pub delta: CurrencyCollection,
 }
 
+/// System currencies to mark accounts
+#[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AuthorityParams {
+    /// System authority addresses
+    pub authority_addresses: Dict<HashBytes, ()>,
+    /// Black mark currency id
+    pub black_mark_id: u32,
+    /// White mark currency id.
+    pub white_mark_id: u32,
+}
+
 /// Config voting setup params.
 #[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
