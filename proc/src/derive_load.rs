@@ -1,5 +1,5 @@
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 
 use crate::internals::{ast, attr, ctxt};
 use crate::{Derive, bound};
@@ -88,11 +88,16 @@ fn build_struct(
         let mut op = load_op(lifetime_def, ty);
 
         if let (Some(since), Some(tag_version)) = (field.attrs.since_tag, &tag_version) {
+            let default = match &field.attrs.default {
+                None => quote! { <#ty as Default>::default() },
+                Some(expr) => expr.to_token_stream(),
+            };
+
             op = quote! {
                 if #tag_version >= #since {
                     #op
                 } else {
-                    <#ty as Default>::default()
+                    #default
                 }
             };
         }

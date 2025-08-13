@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 
 use crate::internals::{ast, attr, ctxt};
 use crate::{Derive, bound};
@@ -165,9 +165,14 @@ fn store_tags_versioned(
             let ident = &field.member;
             let ty = field.ty;
 
+            let default = match &field.attrs.default {
+                None => quote! { <#ty as Default>::default() },
+                Some(expr) => expr.to_token_stream(),
+            };
+
             // TODO: Optimize codegen
             version_guards.push(quote! {
-                if self.#ident != <#ty as Default>::default() {
+                if self.#ident != #default {
                     #tag_version = std::cmp::max(#tag_version, #since);
                 }
             });

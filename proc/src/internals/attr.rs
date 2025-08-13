@@ -83,11 +83,13 @@ impl Variant {
 
 pub struct Field {
     pub since_tag: Option<usize>,
+    pub default: Option<syn::Expr>,
 }
 
 impl Field {
     pub fn from_ast(cx: &Ctxt, field: &syn::Field) -> Self {
         let mut since_tag = Attr::none(cx, SINCE_TAG);
+        let mut default = Attr::none(cx, DEFAULT);
 
         for attr in &field.attrs {
             if attr.path() != TLB {
@@ -106,6 +108,11 @@ impl Field {
                     if let Some(value) = parse_number(cx, SINCE_TAG, &meta)? {
                         since_tag.set(&meta.path, value);
                     }
+                } else if meta.path == DEFAULT {
+                    // Parse `#[tlb(since_tag = 0, default = "123")]`
+                    if let Some(value) = parse_lit_into_expr(cx, DEFAULT, &meta)? {
+                        default.set(&meta.path, value);
+                    }
                 } else {
                     let path = meta.path.to_token_stream().to_string().replace(' ', "");
                     return Err(meta.error(format!("unknown tl field attribute `{path}`")));
@@ -118,6 +125,7 @@ impl Field {
 
         Self {
             since_tag: since_tag.get(),
+            default: default.get(),
         }
     }
 }

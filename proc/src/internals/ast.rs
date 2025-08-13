@@ -46,6 +46,29 @@ impl<'a> Container<'a> {
     }
 
     fn validate(&self, cx: &Ctxt) {
+        let check_default = |field: &Field<'_>| {
+            if field.attrs.default.is_some() && field.attrs.since_tag.is_none() {
+                cx.error_spanned_by(
+                    field.original,
+                    "`tlb(default = ...)` can only be used with `since_tag`",
+                );
+            }
+        };
+        match &self.data {
+            Data::Enum(variants) => {
+                for variant in variants {
+                    for field in &variant.fields {
+                        check_default(field);
+                    }
+                }
+            }
+            Data::Struct(_, fields) => {
+                for field in fields {
+                    check_default(field);
+                }
+            }
+        }
+
         match &self.data {
             Data::Enum(variants) => {
                 if matches!(self.attrs.tlb_tag, attr::ContainerTag::Multiple(_)) {
@@ -57,7 +80,7 @@ impl<'a> Container<'a> {
                         if field.attrs.since_tag.is_some() {
                             cx.error_spanned_by(
                                 field.original,
-                                "since_tag is not supported for enum fields",
+                                "`since_tag` is not supported for enum fields",
                             );
                         }
                     }
@@ -98,13 +121,13 @@ impl<'a> Container<'a> {
                         if tag_count == 0 {
                             cx.error_spanned_by(
                                 field.original,
-                                "since_tag is specified but there are no tags for this struct",
+                                "`since_tag` is specified but there are no tags for this struct",
                             );
                         } else if since >= tag_count {
                             cx.error_spanned_by(
                                 field.original,
                                 format!(
-                                    "since_tag is out of bounds (max tag index is {})",
+                                    "`since_tag` is out of bounds (max tag index is {})",
                                     tag_count - 1
                                 ),
                             );

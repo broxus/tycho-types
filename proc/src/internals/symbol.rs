@@ -3,6 +3,7 @@ pub const TLB: Symbol = Symbol("tlb");
 pub const VALIDATE_WITH: Symbol = Symbol("validate_with");
 pub const TAG: Symbol = Symbol("tag");
 pub const SINCE_TAG: Symbol = Symbol("since_tag");
+pub const DEFAULT: Symbol = Symbol("default");
 
 #[derive(Copy, Clone)]
 pub struct Symbol(&'static str);
