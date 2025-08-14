@@ -906,11 +906,12 @@ pub struct WorkUnitsParamsFinalize {
 ///     download_peers:uint8
 ///     download_tasks:uint16
 ///     sync_support_rounds:uint16
+///     broadcast_retry_attempts:uint8
 ///     = ConsensusConfig;
 /// ```
 #[cfg(feature = "tycho")]
 #[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
-#[tlb(tag = "#d8")]
+#[tlb(tag = ["#d8", "#d9"])]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConsensusConfig {
     /// How far a ready-to-be-signed point (with time in its body)
@@ -978,7 +979,13 @@ pub struct ConsensusConfig {
 
     /// Max duration (amount of rounds) at which local mempool is supposed to keep its history
     /// for neighbours to sync. Also limits DAG growth when it syncs, as sync takes time.
+    /// It also uses in OverlayId.
     pub sync_support_rounds: u16,
+
+    /// Max retry attemts for broadcast
+    #[tlb(since_tag = 1)]
+    #[tlb(default = "2")]
+    pub broadcast_retry_attempts: u8,
 }
 
 /// Consensus configuration params.

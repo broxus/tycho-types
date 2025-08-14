@@ -410,3 +410,50 @@ fn serde() {
     // Current config
     check_config(include_bytes!("new_config.boc"));
 }
+
+#[cfg(feature = "tycho")]
+#[test]
+fn tycho_consensus_config_from_file() {
+    let data = Boc::decode(include_bytes!("tycho_config.boc")).unwrap();
+    let params = BlockchainConfigParams::from_raw(data);
+    let conf: ConsensusConfig = params.get_consensus_config().unwrap();
+
+    assert_eq!(conf, ConsensusConfig {
+        clock_skew_millis: 5000,
+        payload_batch_bytes: 786432,
+        commit_history_rounds: 20,
+        deduplicate_rounds: 140,
+        max_consensus_lag_rounds: 210,
+        payload_buffer_bytes: 52428800,
+        broadcast_retry_millis: 150,
+        download_retry_millis: 25,
+        download_peers: 2,
+        download_tasks: 260,
+        sync_support_rounds: 840,
+        broadcast_retry_attempts: 2,
+    });
+}
+
+#[cfg(feature = "tycho")]
+#[test]
+fn tycho_consensus_config_serialization() {
+    let conf = ConsensusConfig {
+        clock_skew_millis: 5000,
+        payload_batch_bytes: 786432,
+        commit_history_rounds: 20,
+        deduplicate_rounds: 140,
+        max_consensus_lag_rounds: 210,
+        payload_buffer_bytes: 52428800,
+        broadcast_retry_millis: 150,
+        download_retry_millis: 25,
+        download_peers: 2,
+        download_tasks: 260,
+        sync_support_rounds: 840,
+        broadcast_retry_attempts: 8,
+    };
+
+    let serialized_cell = CellBuilder::build_from(&conf).unwrap();
+    let deserialized_conf = serialized_cell.parse::<ConsensusConfig>().unwrap();
+
+    assert_eq!(deserialized_conf, conf);
+}
