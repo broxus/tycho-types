@@ -214,6 +214,11 @@ decl_global_capability! {
         /// Mask: `0x100000000`
         CapFastFinality = 32,
 
+        /// Allows to suspend accounts by special extra currencies.
+        ///
+        /// Mask: `0x200000000`
+        CapSuspendByMarks = 33
+
         /// Omits master block history to save storage space.
         ///
         /// Mask: `0x400000000`
