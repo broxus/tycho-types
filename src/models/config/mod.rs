@@ -519,10 +519,7 @@ impl BlockchainConfigParams {
 
     /// Updates authority params.
     pub fn set_authority_params(&mut self, params: AuthorityParams) -> Result<bool, Error> {
-        self.set_raw(
-            ConfigParam100::ID,
-            ok!(CellBuilder::build_from(params)),
-        )
+        self.set_raw(ConfigParam100::ID, ok!(CellBuilder::build_from(params)))
     }
 
     /// Returns `true` if the config contains a param for the specified id.
