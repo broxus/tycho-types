@@ -213,6 +213,11 @@ decl_global_capability! {
         ///
         /// Mask: `0x100000000`
         CapFastFinality = 32,
+
+        /// Omits master block history to save storage space.
+        ///
+        /// Mask: `0x400000000`
+        CapOmitMasterBlockHistory = 34,
     }
 }
 
