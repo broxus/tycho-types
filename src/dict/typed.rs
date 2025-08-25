@@ -96,6 +96,36 @@ impl<K, V> std::fmt::Debug for Dict<K, V> {
     }
 }
 
+impl<K, V, Q, T> TryFrom<BTreeMap<Q, T>> for Dict<K, V>
+where
+    Q: Borrow<K>,
+    T: Borrow<V>,
+    K: StoreDictKey + Ord,
+    V: Store,
+{
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: BTreeMap<Q, T>) -> Result<Self, Self::Error> {
+        Self::try_from_btree(&value)
+    }
+}
+
+impl<K, V, Q, T> TryFrom<&'_ BTreeMap<Q, T>> for Dict<K, V>
+where
+    Q: Borrow<K>,
+    T: Borrow<V>,
+    K: StoreDictKey + Ord,
+    V: Store,
+{
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: &BTreeMap<Q, T>) -> Result<Self, Self::Error> {
+        Self::try_from_btree(value)
+    }
+}
+
 impl<K, V> Dict<K, V> {
     /// Creates an empty dictionary
     pub const fn new() -> Self {
