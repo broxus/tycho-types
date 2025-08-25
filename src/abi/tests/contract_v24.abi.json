@@ -1,0 +1,56 @@
+{
+  "version": "2.4",
+  "header": [
+    "time",
+    "expire",
+    "pubkey"
+  ],
+  "functions": [{
+    "name": "input_and_output",
+    "inputs": [
+      {"name": "a","type": "uint64"},
+      {"name": "b","type": "uint8[]"},
+      {"name": "c","type": "bytes"}
+    ],
+    "outputs": [
+      {"name": "a","type": "int16"},
+      {"name": "b","type": "uint8"}
+    ]
+  }, {
+    "name": "no_output",
+    "inputs": [{"name": "a", "type": "uint15"}],
+    "outputs": []
+  }, {
+    "name": "no_input",
+    "inputs": [],
+    "outputs": [{"name": "a", "type": "uint8"}]
+  }, {
+    "name": "constructor",
+    "inputs": [],
+    "outputs": []
+  },
+    {
+      "name": "has_id",
+      "id": "0x01234567",
+      "inputs": [],
+      "outputs": []
+    }],
+  "events": [{
+    "name": "input",
+    "inputs": [{"name": "a","type": "uint64"}]
+  }, {
+    "name": "no_input",
+    "inputs": []
+  }, {
+    "name": "has_id",
+    "id": "0x89abcdef",
+    "inputs": []
+  }],
+  "data": [
+    {"key":100,"name":"a","type":"uint256"}
+  ],
+  "fields": [
+    { "name": "a", "type": "uint32" },
+    { "name": "b", "type": "int128", "init": true }
+  ]
+}

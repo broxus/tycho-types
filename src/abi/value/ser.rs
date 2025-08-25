@@ -13,7 +13,7 @@ use crate::cell::{
 };
 use crate::dict::{self, RawDict};
 use crate::error::Error;
-use crate::models::IntAddr;
+use crate::models::{AnyAddr, IntAddr};
 use crate::num::Tokens;
 use crate::prelude::CellFamily;
 
@@ -26,7 +26,7 @@ impl NamedAbiValue {
             serializer.reserve_value(&item.value);
         }
         for item in items {
-            ok!(serializer.write_value(&item.value, context));
+            ok!(serializer.write_value(&item.value, version, context));
         }
         serializer.finalize(context)
     }
@@ -56,7 +56,7 @@ impl AbiValue {
             serializer.reserve_value(value);
         }
         for value in values {
-            ok!(serializer.write_value(value, context));
+            ok!(serializer.write_value(value, version, context));
         }
         serializer.finalize(context)
     }
@@ -71,7 +71,7 @@ impl AbiValue {
         let context = Cell::empty_context();
         let mut serializer = AbiSerializer::new(version);
         serializer.reserve_value(self);
-        ok!(serializer.write_value(self, context));
+        ok!(serializer.write_value(self, version, context));
         serializer.finalize(context)
     }
 
@@ -82,35 +82,35 @@ impl AbiValue {
 
     fn compute_size_full(&self, version: AbiVersion) -> CellTreeStats {
         if version.use_max_size() {
-            self.compute_max_size_full()
+            self.compute_max_size_full(version)
         } else {
-            self.compute_exact_size_full()
+            self.compute_exact_size_full(version)
         }
     }
 
-    fn compute_max_size_full(&self) -> CellTreeStats {
+    fn compute_max_size_full(&self, abi_version: AbiVersion) -> CellTreeStats {
         if let Self::Tuple(items) = self {
             items
                 .iter()
-                .map(|item| item.value.compute_max_size_full())
+                .map(|item| item.value.compute_max_size_full(abi_version))
                 .sum()
         } else {
-            self.compute_max_size_short().into()
+            self.compute_max_size_short(abi_version).into()
         }
     }
 
-    fn compute_exact_size_full(&self) -> CellTreeStats {
+    fn compute_exact_size_full(&self, abi_version: AbiVersion) -> CellTreeStats {
         if let Self::Tuple(items) = self {
             items
                 .iter()
-                .map(|item| item.value.compute_exact_size_full())
+                .map(|item| item.value.compute_exact_size_full(abi_version))
                 .sum()
         } else {
-            self.compute_exact_size_short().into()
+            self.compute_exact_size_short(abi_version).into()
         }
     }
 
-    fn compute_exact_size_short(&self) -> Size {
+    fn compute_exact_size_short(&self, abi_version: AbiVersion) -> Size {
         fn compute_varuint_size(n: &NonZeroU8, value: &BigUint) -> Size {
             let value_bytes: u8 = n.get() - 1;
             let len_bits = (8 - value_bytes.leading_zeros()) as u16;
@@ -131,10 +131,18 @@ impl AbiValue {
             | Self::FixedBytes(_)
             | Self::String(_)
             | Self::Ref(_) => Size { bits: 0, refs: 1 },
-            Self::Address(value) => Size {
-                bits: value.bit_len(),
-                refs: 0,
-            },
+            Self::Address(value) => {
+                let bit_len = match value.as_ref() {
+                    AnyAddr::Var(addr) => addr.bit_len(),
+                    AnyAddr::Std(addr) => addr.bit_len(),
+                    AnyAddr::Ext(addr) => addr.bit_len(),
+                    AnyAddr::None => 2,
+                };
+                Size {
+                    bits: bit_len,
+                    refs: 0,
+                }
+            }
             Self::Token(tokens) => Size {
                 bits: tokens.bit_len().unwrap_or(Tokens::MAX_BITS),
                 refs: 0,
@@ -153,11 +161,11 @@ impl AbiValue {
             },
             Self::Optional(ty, value) => {
                 if let Some(value) = value {
-                    let ty_size = ty.max_size();
+                    let ty_size = ty.max_size(abi_version);
                     if ty_size.bit_count < MAX_BIT_LEN as u64
                         && ty_size.cell_count < MAX_REF_COUNT as u64
                     {
-                        Size { bits: 1, refs: 0 } + value.compute_exact_size_short()
+                        Size { bits: 1, refs: 0 } + value.compute_exact_size_short(abi_version)
                     } else {
                         Size { bits: 1, refs: 1 }
                     }
@@ -168,14 +176,14 @@ impl AbiValue {
             Self::Tuple(items) => {
                 let mut size = Size::ZERO;
                 for item in items {
-                    size = size.saturating_add(item.value.compute_exact_size_short());
+                    size = size.saturating_add(item.value.compute_exact_size_short(abi_version));
                 }
                 size
             }
         }
     }
 
-    fn compute_max_size_short(&self) -> Size {
+    fn compute_max_size_short(&self, abi_version: AbiVersion) -> Size {
         match self {
             Self::Uint(n, _) | Self::Int(n, _) => Size { bits: *n, refs: 0 },
             Self::VarUint(n, _) | Self::VarInt(n, _) => {
@@ -184,6 +192,10 @@ impl AbiValue {
                 Size { bits, refs: 0 }
             }
             Self::Bool(_) => Size { bits: 1, refs: 0 },
+            Self::FixedBytes(size) if abi_version >= AbiVersion::V2_4 => Size {
+                bits: size.len() as u16 * 8,
+                refs: 0,
+            },
             Self::Cell(_)
             | Self::Bytes(_)
             | Self::FixedBytes(_)
@@ -200,7 +212,7 @@ impl AbiValue {
             Self::Array(..) => Size { bits: 33, refs: 1 },
             Self::FixedArray(..) | Self::Map(..) => Size { bits: 1, refs: 1 },
             Self::Optional(ty, _) => {
-                let ty_size = ty.max_size();
+                let ty_size = ty.max_size(abi_version);
                 if ty_size.bit_count < MAX_BIT_LEN as u64
                     && ty_size.cell_count < MAX_REF_COUNT as u64
                 {
@@ -215,7 +227,7 @@ impl AbiValue {
             Self::Tuple(items) => {
                 let mut size = Size::ZERO;
                 for item in items {
-                    size = size.saturating_add(item.value.compute_max_size_short());
+                    size = size.saturating_add(item.value.compute_max_size_short(abi_version));
                 }
                 size
             }
@@ -354,6 +366,7 @@ impl AbiSerializer {
     pub(crate) fn write_value(
         &mut self,
         value: &AbiValue,
+        abi_version: AbiVersion,
         c: &dyn CellContext,
     ) -> Result<(), Error> {
         match value {
@@ -364,25 +377,29 @@ impl AbiSerializer {
             AbiValue::Bool(value) => self.write_bool(*value),
             AbiValue::Cell(value) => self.write_cell(value),
             AbiValue::Address(value) => self.write_address(value),
-            AbiValue::Bytes(value) | AbiValue::FixedBytes(value) => self.write_bytes(value, c),
+            AbiValue::Bytes(value) => self.write_bytes(value, c),
+            AbiValue::FixedBytes(value) => self.write_fixed_bytes(value, abi_version, c),
             AbiValue::String(value) => self.write_bytes(value.as_bytes(), c),
             AbiValue::Token(value) => self.write_tokens(value),
-            AbiValue::Tuple(items) => self.write_tuple(items, c),
-            AbiValue::Array(ty, values) => self.write_array(ty, values, false, c),
-            AbiValue::FixedArray(ty, values) => self.write_array(ty, values, true, c),
-            AbiValue::Map(k, v, values) => self.write_map(k, v, values, c),
-            AbiValue::Optional(ty, value) => self.write_optional(ty, value.as_deref(), c),
-            AbiValue::Ref(value) => self.write_ref(value, c),
+            AbiValue::Tuple(items) => self.write_tuple(items, abi_version, c),
+            AbiValue::Array(ty, values) => self.write_array(ty, values, false, abi_version, c),
+            AbiValue::FixedArray(ty, values) => self.write_array(ty, values, true, abi_version, c),
+            AbiValue::Map(k, v, values) => self.write_map(k, v, values, abi_version, c),
+            AbiValue::Optional(ty, value) => {
+                self.write_optional(ty, value.as_deref(), abi_version, c)
+            }
+            AbiValue::Ref(value) => self.write_ref(value, abi_version, c),
         }
     }
 
     pub(crate) fn write_tuple(
         &mut self,
         items: &[NamedAbiValue],
+        abi_version: AbiVersion,
         context: &dyn CellContext,
     ) -> Result<(), Error> {
         for item in items {
-            ok!(self.write_value(&item.value, context));
+            ok!(self.write_value(&item.value, abi_version, context));
         }
         Ok(())
     }
@@ -432,7 +449,7 @@ impl AbiSerializer {
         target.store_reference(cell.clone())
     }
 
-    fn write_address(&mut self, address: &IntAddr) -> Result<(), Error> {
+    fn write_address(&mut self, address: &AnyAddr) -> Result<(), Error> {
         let target = self.require_builder(Size {
             bits: if self.version.use_max_size() {
                 IntAddr::BITS_MAX
@@ -454,6 +471,23 @@ impl AbiSerializer {
             refs: 0,
         });
         tokens.store_into(target, Cell::empty_context())
+    }
+
+    fn write_fixed_bytes(
+        &mut self,
+        data: &[u8],
+        abi_version: AbiVersion,
+        context: &dyn CellContext,
+    ) -> Result<(), Error> {
+        if abi_version >= AbiVersion::V2_4 {
+            let target = self.require_builder(Size {
+                bits: data.len() as u16 * 8,
+                refs: 0,
+            });
+            target.store_raw(data, data.len() as u16 * 8)
+        } else {
+            self.write_bytes(data, context)
+        }
     }
 
     fn write_bytes(&mut self, mut data: &[u8], context: &dyn CellContext) -> Result<(), Error> {
@@ -494,9 +528,10 @@ impl AbiSerializer {
         value_ty: &AbiType,
         values: &[AbiValue],
         fixed_len: bool,
+        abi_version: AbiVersion,
         context: &dyn CellContext,
     ) -> Result<(), Error> {
-        let inline_value = fits_into_dict_leaf(32, value_ty.max_bits());
+        let inline_value = fits_into_dict_leaf(32, value_ty.max_bits(abi_version));
 
         let mut dict = RawDict::<32>::new();
         let mut key_builder = CellDataBuilder::new();
@@ -506,7 +541,7 @@ impl AbiSerializer {
 
             let value = {
                 serializer.reserve_value(value);
-                ok!(serializer.write_value(value, context));
+                ok!(serializer.write_value(value, abi_version, context));
                 ok!(serializer.take_finalize(context))
             };
             let value = if inline_value {
@@ -540,10 +575,11 @@ impl AbiSerializer {
         key_ty: &PlainAbiType,
         value_ty: &AbiType,
         value: &BTreeMap<PlainAbiValue, AbiValue>,
+        abi_version: AbiVersion,
         context: &dyn CellContext,
     ) -> Result<(), Error> {
         let key_bits = key_ty.key_bits();
-        let inline_value = fits_into_dict_leaf(key_bits, value_ty.max_bits());
+        let inline_value = fits_into_dict_leaf(key_bits, value_ty.max_bits(abi_version));
 
         let mut dict = None::<Cell>;
         let mut key_builder = CellBuilder::new();
@@ -553,7 +589,7 @@ impl AbiSerializer {
 
             let value = {
                 serializer.reserve_value(value);
-                ok!(serializer.write_value(value, context));
+                ok!(serializer.write_value(value, abi_version, context));
                 ok!(serializer.take_finalize(context))
             };
             let value = if inline_value {
@@ -582,10 +618,11 @@ impl AbiSerializer {
         &mut self,
         ty: &AbiType,
         value: Option<&AbiValue>,
+        abi_version: AbiVersion,
         context: &dyn CellContext,
     ) -> Result<(), Error> {
         let (max_size, inline) = {
-            let ty_size = ty.max_size();
+            let ty_size = ty.max_size(abi_version);
             if ty_size.bit_count < MAX_BIT_LEN as _ && ty_size.cell_count < MAX_REF_COUNT as _ {
                 let size = Size {
                     bits: 1 + ty_size.bit_count as u16,
@@ -602,7 +639,7 @@ impl AbiSerializer {
                 let value = {
                     let mut serializer = self.begin_child();
                     serializer.reserve_value(value);
-                    ok!(serializer.write_value(value, context));
+                    ok!(serializer.write_value(value, abi_version, context));
                     ok!(serializer.finalize(context))
                 };
 
@@ -635,11 +672,16 @@ impl AbiSerializer {
         }
     }
 
-    fn write_ref(&mut self, value: &AbiValue, context: &dyn CellContext) -> Result<(), Error> {
+    fn write_ref(
+        &mut self,
+        value: &AbiValue,
+        abi_version: AbiVersion,
+        context: &dyn CellContext,
+    ) -> Result<(), Error> {
         let cell = {
             let mut serializer = self.begin_child();
             serializer.reserve_value(value);
-            ok!(serializer.write_value(value, context));
+            ok!(serializer.write_value(value, abi_version, context));
             let builder = ok!(serializer.finalize(context));
             ok!(builder.build_ext(context))
         };

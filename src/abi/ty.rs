@@ -1,13 +1,12 @@
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::hash::Hash;
 use std::num::NonZeroU8;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 use super::error::{ParseAbiTypeError, ParseNamedAbiTypeError};
-use crate::abi::WithoutName;
+use crate::abi::{AbiVersion, WithoutName};
 use crate::cell::{CellTreeStats, MAX_BIT_LEN, MAX_REF_COUNT};
 use crate::models::{IntAddr, StdAddr};
 use crate::num::Tokens;
@@ -351,7 +350,7 @@ impl AbiType {
     }
 
     /// Returns the maximum number of bits and refs that this type can occupy.
-    pub fn max_size(&self) -> CellTreeStats {
+    pub fn max_size(&self, abi_version: AbiVersion) -> CellTreeStats {
         match self {
             Self::Uint(n) | Self::Int(n) => CellTreeStats {
                 bit_count: *n as _,
@@ -367,6 +366,11 @@ impl AbiType {
             }
             Self::Bool => CellTreeStats {
                 bit_count: 1,
+                cell_count: 0,
+            },
+
+            Self::FixedBytes(bytes) if abi_version >= AbiVersion::V2_4 => CellTreeStats {
+                bit_count: *bytes as u64 * 8,
                 cell_count: 0,
             },
             Self::Cell | Self::Bytes | Self::FixedBytes(_) | Self::String | Self::Ref(_) => {
@@ -392,7 +396,7 @@ impl AbiType {
                 cell_count: 1,
             },
             Self::Optional(ty) => {
-                let ty_size = ty.max_size();
+                let ty_size = ty.max_size(abi_version);
                 if ty_size.bit_count < MAX_BIT_LEN as u64
                     && ty_size.cell_count < MAX_REF_COUNT as u64
                 {
@@ -407,18 +411,18 @@ impl AbiType {
                     }
                 }
             }
-            Self::Tuple(items) => items.iter().map(|item| item.ty.max_size()).sum(),
+            Self::Tuple(items) => items.iter().map(|item| item.ty.max_size(abi_version)).sum(),
         }
     }
 
     /// Returns the maximum number of bits that this type can occupy.
-    pub fn max_bits(&self) -> usize {
-        self.max_size().bit_count as usize
+    pub fn max_bits(&self, abi_version: AbiVersion) -> usize {
+        self.max_size(abi_version).bit_count as usize
     }
 
     /// Returns the maximum number of cells that this type can occupy.
-    pub fn max_refs(&self) -> usize {
-        self.max_size().cell_count as usize
+    pub fn max_refs(&self, abi_version: AbiVersion) -> usize {
+        self.max_size(abi_version).cell_count as usize
     }
 
     fn components(&self) -> Option<&[NamedAbiType]> {
@@ -433,7 +437,7 @@ impl AbiType {
         }
     }
 
-    fn components_mut(&mut self) -> Option<&mut Arc<[NamedAbiType]>> {
+    pub(crate) fn components_mut(&mut self) -> Option<&mut Arc<[NamedAbiType]>> {
         match self {
             Self::Tuple(types) => Some(types),
             Self::Array(ty) => Arc::make_mut(ty).components_mut(),
@@ -545,7 +549,7 @@ impl AbiType {
         Self::Ref(Arc::<AbiType>::from(ty))
     }
 
-    fn from_simple_str(s: &str) -> Result<Self, ParseAbiTypeError> {
+    pub(crate) fn from_simple_str(s: &str) -> Result<Self, ParseAbiTypeError> {
         if let Some(arr_ty) = s.strip_suffix(']') {
             let (ty, len) = ok!(arr_ty
                 .rsplit_once('[')

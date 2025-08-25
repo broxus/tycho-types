@@ -13,7 +13,7 @@ use crate::abi::{
 use crate::cell::{Cell, CellSlice, Load, MAX_BIT_LEN, MAX_REF_COUNT};
 use crate::dict::{self, RawDict};
 use crate::error::Error;
-use crate::models::IntAddr;
+use crate::models::{AnyAddr, IntAddr};
 use crate::num::Tokens;
 
 impl NamedAbiValue {
@@ -196,7 +196,7 @@ impl AbiValue {
             AbiType::Cell => load_cell(version, last, slice).map(Self::Cell),
             AbiType::Address => {
                 ok!(preload_bits(1, slice));
-                Ok(Self::Address(IntAddr::load_from(slice).map(Box::new)?))
+                Ok(Self::Address(AnyAddr::load_from(slice).map(Box::new)?))
             }
             AbiType::Bytes => load_bytes(version, last, slice).map(Self::Bytes),
             AbiType::FixedBytes(len) => {
@@ -450,12 +450,23 @@ fn load_fixed_bytes(
     last: bool,
     slice: &mut CellSlice,
 ) -> Result<Bytes> {
-    let bytes = ok!(load_bytes(version, last, slice));
-    anyhow::ensure!(bytes.len() == len, AbiError::BytesSizeMismatch {
-        expected: len,
-        len: bytes.len()
-    });
-    Ok(bytes)
+    if version >= AbiVersion::V2_4 {
+        let bit_len = len as u16 * 8;
+        ok!(preload_bits(bit_len, slice));
+        let mut buffer = vec![0u8; len];
+        let result = slice.load_raw(buffer.as_mut_slice(), bit_len)?;
+        Ok(Bytes::copy_from_slice(result))
+    } else {
+        let bytes = ok!(load_bytes(version, last, slice));
+        anyhow::ensure!(
+            bytes.len() == len,
+            AbiError::BytesSizeMismatch {
+                expected: len,
+                len: bytes.len()
+            }
+        );
+        Ok(bytes)
+    }
 }
 
 fn load_string(version: AbiVersion, last: bool, slice: &mut CellSlice) -> Result<String> {
@@ -555,7 +566,7 @@ fn load_optional(
         return Ok(None);
     }
 
-    let ty_size = ty.max_size();
+    let ty_size = ty.max_size(version);
     if ty_size.bit_count < MAX_BIT_LEN as u64 && ty_size.cell_count < MAX_REF_COUNT as u64 {
         let value = ok!(AbiValue::load_ext(ty, version, last, allow_partial, slice));
         Ok(Some(Box::new(value)))
@@ -837,7 +848,7 @@ mod tests {
             load_simple(
                 v,
                 addr.clone(),
-                AbiValue::Address(Box::new(IntAddr::Std(addr))),
+                AbiValue::Address(Box::new(AnyAddr::Std(addr))),
             )?;
 
             let addr: VarAddr = VarAddr {
@@ -849,7 +860,7 @@ mod tests {
             load_simple(
                 v,
                 addr.clone(),
-                AbiValue::Address(Box::new(IntAddr::Var(addr))),
+                AbiValue::Address(Box::new(AnyAddr::Var(addr))),
             )?;
         }
 

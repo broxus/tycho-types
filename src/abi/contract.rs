@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -39,10 +40,15 @@ pub struct Contract {
     pub events: HashMap<Arc<str>, Event>,
 
     /// Contract init data.
-    pub init_data: HashMap<Arc<str>, (u64, NamedAbiType)>,
+    pub init_data: ContractInitData,
 
     /// Contract storage fields.
     pub fields: Arc<[NamedAbiType]>,
+}
+
+pub enum ContractInitData {
+    Dict(HashMap<Arc<str>, (u64, NamedAbiType)>),
+    PlainFields(HashSet<Arc<str>>),
 }
 
 impl Contract {
@@ -68,6 +74,53 @@ impl Contract {
         tokens: &[NamedAbiValue],
         data: &Cell,
     ) -> Result<Cell> {
+        if self.abi_version < AbiVersion::V2_4 {
+            self.update_init_data_internal(pubkey, tokens, data)
+        } else {
+            self.pack_init_fields_into_cell(tokens)
+        }
+    }
+
+    fn pack_init_fields_into_cell(&self, tokens: &[NamedAbiValue]) -> Result<Cell> {
+        let ContractInitData::PlainFields(init_data) = &self.init_data else {
+            anyhow::bail!("Dict init_data is not supported for ABI version >= 2.4")
+        };
+
+        let mut init_values = Vec::with_capacity(self.fields.len());
+
+        let mut tokens_map = HashMap::<Arc<str>, AbiValue>::with_capacity_and_hasher(
+            tokens.len(),
+            Default::default(),
+        );
+
+        for i in tokens {
+            let i = i.clone();
+            tokens_map.insert(i.name, i.value);
+        }
+
+        for i in self.fields.as_ref() {
+            let token = tokens_map.remove_entry(i.name.as_ref());
+
+            if init_data.get(i.name.as_ref()).is_some() {
+                let (_, value) = token.ok_or(AbiError::UnexpectedInitDataParam(i.name.clone()))?;
+                init_values.push(value)
+            } else {
+                if let Some((name, _)) = token {
+                    return Err(AbiError::UnexpectedInitDataParam(name).into());
+                }
+                init_values.push(i.ty.make_default_value())
+            }
+        }
+        let cell = AbiValue::tuple_to_cell(init_values.as_ref(), self.abi_version)?;
+        Ok(cell)
+    }
+
+    fn update_init_data_internal(
+        &self,
+        pubkey: Option<&ed25519_dalek::VerifyingKey>,
+        tokens: &[NamedAbiValue],
+        data: &Cell,
+    ) -> Result<Cell> {
         // Always check if data is valid
         let mut result = data.parse::<RawDict<64>>()?;
 
@@ -76,11 +129,15 @@ impl Contract {
             return Ok(data.clone());
         }
 
+        let ContractInitData::Dict(init_data) = &self.init_data else {
+            anyhow::bail!("Plain init_data is not supported for ABI version < 2.4")
+        };
+
         let context = Cell::empty_context();
         let mut key_builder = CellDataBuilder::new();
 
         for token in tokens {
-            let Some((key, ty)) = self.init_data.get(token.name.as_ref()) else {
+            let Some((key, ty)) = init_data.get(token.name.as_ref()) else {
                 anyhow::bail!(AbiError::UnexpectedInitDataParam(token.name.clone()));
             };
             token.check_type(ty)?;
@@ -119,10 +176,25 @@ impl Contract {
         pubkey: &ed25519_dalek::VerifyingKey,
         tokens: &[NamedAbiValue],
     ) -> Result<Cell> {
+        if self.abi_version < AbiVersion::V2_4 {
+            self.encode_init_data_internal(pubkey, tokens)
+        } else {
+            self.pack_init_fields_into_cell(tokens)
+        }
+    }
+
+    fn encode_init_data_internal(
+        &self,
+        pubkey: &ed25519_dalek::VerifyingKey,
+        tokens: &[NamedAbiValue],
+    ) -> Result<Cell> {
         let mut result = RawDict::<64>::new();
 
-        let mut init_data = self
-            .init_data
+        let ContractInitData::Dict(init_data) = &self.init_data else {
+            anyhow::bail!("Plain init fields are not supported")
+        };
+
+        let mut init_data = init_data
             .iter()
             .map(|(name, value)| (name.as_ref(), value))
             .collect::<HashMap<_, _>>();
@@ -177,11 +249,22 @@ impl Contract {
 
     /// Tries to parse init data fields of this contract from an account data.
     pub fn decode_init_data(&self, data: &DynCell) -> Result<Vec<NamedAbiValue>> {
+        if self.abi_version < AbiVersion::V2_4 {
+            self.decode_init_data_internal(data)
+        } else {
+            self.decode_init_fields(data)
+        }
+    }
+
+    fn decode_init_data_internal(&self, data: &DynCell) -> Result<Vec<NamedAbiValue>> {
         let init_data = data.parse::<Dict<u64, CellSlice>>()?;
 
-        let mut result = Vec::with_capacity(self.init_data.len());
+        let ContractInitData::Dict(init_data_map) = &self.init_data else {
+            anyhow::bail!("Plain init fields are not supported")
+        };
+        let mut result = Vec::with_capacity(init_data_map.len());
 
-        for (key, item) in self.init_data.values() {
+        for (key, item) in init_data_map.values() {
             let Some(mut value) = init_data.get(key)? else {
                 anyhow::bail!(AbiError::InitDataFieldNotFound(item.name.clone()));
             };
@@ -189,6 +272,24 @@ impl Contract {
         }
 
         Ok(result)
+    }
+
+    fn decode_init_fields(&self, data: &DynCell) -> Result<Vec<NamedAbiValue>> {
+        let ContractInitData::PlainFields(init_fields) = &self.init_data else {
+            anyhow::bail!("Plain init fields are not supported")
+        };
+
+        let values = self.decode_fields(data.as_slice()?)?;
+
+        let mut init_values = Vec::with_capacity(init_fields.len());
+
+        for i in values {
+            if init_fields.contains(i.name.as_ref()) {
+                init_values.push(i)
+            }
+        }
+
+        Ok(init_values)
     }
 
     /// Encodes an account data with the specified storage fields of this contract.
@@ -249,6 +350,14 @@ impl<'de> Deserialize<'de> for Contract {
         }
 
         #[derive(Deserialize)]
+        struct SerdeNamedAbiType {
+            #[serde(flatten)]
+            named_abi_type: NamedAbiType,
+            #[serde(default)]
+            init: bool,
+        }
+
+        #[derive(Deserialize)]
         struct SerdeContract {
             #[serde(default, rename = "ABI version")]
             abi_version: Option<u8>,
@@ -262,7 +371,7 @@ impl<'de> Deserialize<'de> for Contract {
             #[serde(default)]
             data: Vec<InitData>,
             #[serde(default)]
-            fields: Vec<NamedAbiType>,
+            fields: Vec<SerdeNamedAbiType>,
         }
 
         #[derive(Deserialize)]
@@ -354,14 +463,26 @@ impl<'de> Deserialize<'de> for Contract {
             })
             .collect();
 
-        let init_data = contract
-            .data
-            .into_iter()
-            .map(|item| {
-                let name = item.ty.name.clone();
-                (name, (item.key, item.ty))
-            })
-            .collect();
+        let init_data = if abi_version >= AbiVersion::V2_4 {
+            let init_fields = contract
+                .fields
+                .iter()
+                .filter(|x| x.init)
+                .map(|x| x.named_abi_type.name.clone())
+                .collect();
+            ContractInitData::PlainFields(init_fields)
+        } else {
+            let data = contract
+                .data
+                .into_iter()
+                .map(|item| {
+                    let name = item.ty.name.clone();
+                    (name, (item.key, item.ty))
+                })
+                .collect();
+
+            ContractInitData::Dict(data)
+        };
 
         Ok(Self {
             abi_version,
@@ -369,7 +490,13 @@ impl<'de> Deserialize<'de> for Contract {
             functions,
             events,
             init_data,
-            fields: Arc::from(contract.fields),
+            fields: Arc::from(
+                contract
+                    .fields
+                    .into_iter()
+                    .map(|x| x.named_abi_type)
+                    .collect::<Vec<_>>(),
+            ),
         })
     }
 }
@@ -437,8 +564,8 @@ impl Function {
         }
 
         let context = Cell::empty_context();
-        serializer.write_value(&output_id, context)?;
-        serializer.write_tuple(tokens, context)?;
+        serializer.write_value(&output_id, version, context)?;
+        serializer.write_tuple(tokens, version, context)?;
         serializer.finalize(context).map_err(From::from)
     }
 
@@ -741,7 +868,7 @@ impl<'a> ExternalInput<'_, 'a> {
                 AbiValue::Bool(false)
             };
             serializer.reserve_value(&value);
-            serializer.write_value(&value, context)?;
+            serializer.write_value(&value, abi_version, context)?;
         }
 
         let time = self.time.unwrap_or_else(now_ms);
@@ -759,8 +886,8 @@ impl<'a> ExternalInput<'_, 'a> {
             })?;
         }
 
-        serializer.write_value(&input_id, context)?;
-        serializer.write_tuple(self.tokens, context)?;
+        serializer.write_value(&input_id, abi_version, context)?;
+        serializer.write_tuple(self.tokens, abi_version, context)?;
 
         let payload = serializer.finalize(context)?.build_ext(context)?;
         Ok((expire_at, payload))
