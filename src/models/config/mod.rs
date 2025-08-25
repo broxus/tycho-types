@@ -512,13 +512,16 @@ impl BlockchainConfigParams {
         self.set_raw(ConfigParam43::ID, ok!(CellBuilder::build_from(size_limits)))
     }
 
-    /// Returns authority params.
-    pub fn get_authority_params(&self) -> Result<AuthorityParams, Error> {
+    /// Returns authority marks config.
+    pub fn get_authority_marks_config(&self) -> Result<AuthorityMarksConfig, Error> {
         ok!(self.get::<ConfigParam100>()).ok_or(Error::CellUnderflow)
     }
 
-    /// Updates authority params.
-    pub fn set_authority_params(&mut self, params: AuthorityParams) -> Result<bool, Error> {
+    /// Updates authority marks config.
+    pub fn set_authority_marks_config(
+        &mut self,
+        params: &AuthorityMarksConfig,
+    ) -> Result<bool, Error> {
         self.set_raw(ConfigParam100::ID, ok!(CellBuilder::build_from(params)))
     }
 
@@ -1143,12 +1146,11 @@ define_config_params! {
     #[serde(transparent)]
     50 => ConfigParam50(MintOnceConfig),
 
-    /// Authority params
+    /// Authority marks config.
     ///
-    /// Contains dictionary with special addresses (in masterchain) which can mark other accounts
-    /// and system marks currency IDs.
+    /// Contains an [`AuthorityMarksConfig`].
     #[serde(transparent)]
-    100 => ConfigParam100(AuthorityParams),
+    100 => ConfigParam100(AuthorityMarksConfig),
 }
 
 #[cfg(feature = "serde")]

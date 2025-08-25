@@ -73,18 +73,6 @@ pub struct MintOnceConfig {
     pub delta: CurrencyCollection,
 }
 
-/// System currencies to mark accounts
-#[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct AuthorityParams {
-    /// System authority addresses
-    pub authority_addresses: Dict<HashBytes, ()>,
-    /// Black mark currency id
-    pub black_mark_id: u32,
-    /// White mark currency id.
-    pub white_mark_id: u32,
-}
-
 /// Config voting setup params.
 #[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1625,6 +1613,19 @@ pub struct SizeLimitsConfig {
 const fn shift_ceil_price(value: u128) -> u128 {
     let r = value & 0xffff != 0;
     (value >> 16) + r as u128
+}
+
+/// Authority marks configuration.
+#[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[tlb(tag = "#01")]
+pub struct AuthorityMarksConfig {
+    /// Addresses in masterchain that can manage authority marks.
+    pub authority_addresses: Dict<HashBytes, ()>,
+    /// Black mark extra currency id.
+    pub black_mark_id: u32,
+    /// White mark extra currency id.
+    pub white_mark_id: u32,
 }
 
 #[cfg(test)]
