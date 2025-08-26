@@ -68,6 +68,7 @@ impl Store for ComputePhase {
                     ok!(builder.store_u32(phase.vm_steps));
                     ok!(builder.store_u256(&phase.vm_init_state_hash));
                     ok!(builder.store_u256(&phase.vm_final_state_hash));
+                    ok!(phase.missing_library.store_into(&mut builder, context));
                     ok!(builder.build_ext(context))
                 };
 
@@ -107,6 +108,7 @@ impl<'a> Load<'a> for ComputePhase {
             vm_steps: ok!(slice.load_u32()),
             vm_init_state_hash: ok!(slice.load_u256()),
             vm_final_state_hash: ok!(slice.load_u256()),
+            missing_library: ok!(Option::<HashBytes>::load_from(slice)),
         }))
     }
 }
@@ -141,6 +143,8 @@ pub struct ExecutedComputePhase {
     pub vm_init_state_hash: HashBytes,
     /// Hash of the VM state after executing this phase.
     pub vm_final_state_hash: HashBytes,
+    /// Hash of the library which was missing during execution.
+    pub missing_library: Option<HashBytes>,
 }
 
 /// Skipped compute phase info.
