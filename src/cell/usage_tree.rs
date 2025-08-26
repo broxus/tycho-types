@@ -257,10 +257,10 @@ mod rc {
                     Some(value) => value,
                     slot @ None => {
                         let child = self.cell.as_ref().reference_cloned(index)?;
-                        if self.mode == UsageTreeMode::OnLoad {
-                            if let Some(usage_tree) = self.usage_tree.upgrade() {
-                                usage_tree.insert(&child);
-                            }
+                        if self.mode == UsageTreeMode::OnLoad
+                            && let Some(usage_tree) = self.usage_tree.upgrade()
+                        {
+                            usage_tree.insert(&child);
                         }
 
                         slot.insert(Rc::new(UsageCell::new(
