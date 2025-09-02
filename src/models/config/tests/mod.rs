@@ -131,6 +131,11 @@ fn simple_config() {
             soft_limit: 5000,
             hard_limit: 10000,
         },
+        items: BlockParamLimits {
+            underload: 0,
+            soft_limit: 0,
+            hard_limit: 0,
+        },
     });
 
     let sc_limits = blockchain_config.get::<ConfigParam23>().unwrap().unwrap();

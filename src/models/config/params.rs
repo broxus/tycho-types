@@ -504,7 +504,7 @@ impl<'a> Load<'a> for GasLimitsPrices {
 }
 
 /// Block limits parameter.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Store, Load)]
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Store, Load)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[tlb(tag = "#c3", validate_with = "Self::is_valid")]
 pub struct BlockParamLimits {
@@ -526,7 +526,7 @@ impl BlockParamLimits {
 /// Block limits.
 #[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[tlb(tag = "#5d")]
+#[tlb(tag = ["#5d", "#5e"])]
 pub struct BlockLimits {
     /// Block size limits in bytes.
     pub bytes: BlockParamLimits,
@@ -534,6 +534,9 @@ pub struct BlockLimits {
     pub gas: BlockParamLimits,
     /// Logical time delta limits.
     pub lt_delta: BlockParamLimits,
+    /// Max number of items in a block (touched accounts, created transactions, created out messages).
+    #[tlb(since_tag = 1)]
+    pub items: BlockParamLimits,
 }
 
 /// Message forwarding prices.
