@@ -119,6 +119,8 @@ impl CellImpl for UsageCell {
         if self.should_insert() {
             if let Some(usage_tree) = self.usage_tree.upgrade() {
                 usage_tree.insert(&self.cell);
+            } else {
+                self.set_orphaned();
             }
             self.set_inserted();
         }
@@ -130,20 +132,28 @@ impl CellImpl for UsageCell {
     }
 
     fn reference(&self, index: u8) -> Option<&DynCell> {
-        Some(self.load_reference(index)?.as_ref())
+        if self.is_orphaned() {
+            self.cell.reference(index)
+        } else {
+            Some(self.load_reference(index)?.as_ref())
+        }
     }
 
     fn reference_cloned(&self, index: u8) -> Option<Cell> {
-        let cell = self.load_reference(index)?.clone();
+        if self.is_orphaned() {
+            self.cell.reference_cloned(index)
+        } else {
+            let cell = self.load_reference(index)?.clone();
 
-        #[cfg(not(feature = "sync"))]
-        {
-            Some(Cell::from(cell as std::rc::Rc<DynCell>))
-        }
+            #[cfg(not(feature = "sync"))]
+            {
+                Some(Cell::from(cell as std::rc::Rc<DynCell>))
+            }
 
-        #[cfg(feature = "sync")]
-        {
-            Some(Cell::from(cell as std::sync::Arc<DynCell>))
+            #[cfg(feature = "sync")]
+            {
+                Some(Cell::from(cell as std::sync::Arc<DynCell>))
+            }
         }
     }
 
@@ -224,6 +234,7 @@ mod rc {
         pub usage_tree: Weak<UsageTreeState>,
         pub children: std::cell::UnsafeCell<[Option<Rc<Self>>; 4]>,
         pub inserted: std::cell::Cell<bool>,
+        pub orphaned: std::cell::Cell<bool>,
         pub mode: UsageTreeMode,
     }
 
@@ -234,6 +245,7 @@ mod rc {
                 usage_tree,
                 children: Default::default(),
                 inserted: std::cell::Cell::new(mode == UsageTreeMode::OnLoad),
+                orphaned: std::cell::Cell::new(false),
                 mode,
             }
         }
@@ -242,10 +254,22 @@ mod rc {
             self.cell.clone()
         }
 
+        #[inline]
+        pub fn is_orphaned(&self) -> bool {
+            self.orphaned.get()
+        }
+
+        #[inline]
+        pub fn set_orphaned(&self) {
+            self.orphaned.set(true);
+        }
+
+        #[inline]
         pub fn should_insert(&self) -> bool {
             !self.inserted.get()
         }
 
+        #[inline]
         pub fn set_inserted(&self) {
             self.inserted.set(true);
         }
@@ -257,10 +281,12 @@ mod rc {
                     Some(value) => value,
                     slot @ None => {
                         let child = self.cell.as_ref().reference_cloned(index)?;
-                        if self.mode == UsageTreeMode::OnLoad
-                            && let Some(usage_tree) = self.usage_tree.upgrade()
-                        {
-                            usage_tree.insert(&child);
+                        if self.mode == UsageTreeMode::OnLoad {
+                            if let Some(usage_tree) = self.usage_tree.upgrade() {
+                                usage_tree.insert(&child);
+                            } else {
+                                self.set_orphaned();
+                            }
                         }
 
                         slot.insert(Rc::new(UsageCell::new(
@@ -344,6 +370,7 @@ mod sync {
         pub reference_states: [Once; 4],
         pub reference_data: [UnsafeCell<Option<Arc<Self>>>; 4],
         pub inserted: AtomicBool,
+        pub orphaned: AtomicBool,
         pub mode: UsageTreeMode,
     }
 
@@ -356,6 +383,7 @@ mod sync {
                 reference_states: [(); 4].map(|_| Once::new()),
                 reference_data: [(); 4].map(|_| UnsafeCell::new(None)),
                 inserted: AtomicBool::new(mode == UsageTreeMode::OnLoad),
+                orphaned: AtomicBool::new(false),
                 mode,
             }
         }
@@ -367,10 +395,22 @@ mod sync {
             }
         }
 
+        #[inline]
+        pub fn is_orphaned(&self) -> bool {
+            self.orphaned.load(Ordering::Acquire)
+        }
+
+        #[inline]
+        pub fn set_orphaned(&self) {
+            self.orphaned.store(true, Ordering::Release);
+        }
+
+        #[inline]
         pub fn should_insert(&self) -> bool {
             !self.inserted.load(Ordering::Acquire)
         }
 
+        #[inline]
         pub fn set_inserted(&self) {
             self.inserted.store(true, Ordering::Release);
         }
@@ -400,9 +440,12 @@ mod sync {
                 let child = unsafe { &*self.reference_data[index as usize].get().cast_const() };
                 if crate::util::unlikely(should_insert)
                     && let Some(child) = child
-                    && let Some(usage_tree) = self.usage_tree.upgrade()
                 {
-                    usage_tree.insert(&child.cell);
+                    if let Some(usage_tree) = self.usage_tree.upgrade() {
+                        usage_tree.insert(&child.cell);
+                    } else {
+                        self.set_orphaned();
+                    }
                 }
 
                 child.as_ref()
