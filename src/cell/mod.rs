@@ -662,6 +662,18 @@ impl HashBytes {
         let output = unsafe { std::str::from_utf8_unchecked(&output) };
         f.write_str(output)
     }
+
+    /// Creates a bigint from bytes (as big-endian).
+    #[cfg(feature = "bigint")]
+    pub fn as_biguint(&self) -> num_bigint::BigUint {
+        num_bigint::BigUint::from_bytes_be(&self.0)
+    }
+
+    /// Creates a bigint from bytes (as big-endian).
+    #[cfg(feature = "bigint")]
+    pub fn as_bigint(&self) -> num_bigint::BigInt {
+        self.as_biguint().into()
+    }
 }
 
 impl Default for HashBytes {
