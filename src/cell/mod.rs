@@ -611,6 +611,43 @@ impl HashBytes {
         Self(slice.try_into().expect("slice with incorrect length"))
     }
 
+    /// Converts integer into zero-padded big-endian bytes.
+    ///
+    /// Returns `None` on overflow or negative values.
+    #[cfg(feature = "bigint")]
+    pub fn from_bigint(int: &num_bigint::BigInt) -> Option<Self> {
+        if int.sign() == num_bigint::Sign::Minus {
+            return None;
+        }
+        Self::from_biguint(int.magnitude())
+    }
+
+    /// Converts integer into zero-padded big-endian bytes.
+    ///
+    /// Returns `None` on overflow.
+    #[cfg(feature = "bigint")]
+    pub fn from_biguint(uint: &num_bigint::BigUint) -> Option<Self> {
+        let mut bytes = uint.to_bytes_le();
+        if bytes.len() > 32 {
+            return None;
+        }
+
+        bytes.resize(32, 0);
+        bytes.reverse();
+        Some(Self::from_slice(&bytes))
+    }
+
+    /// Converts integer into zero-padded big-endian bytes.
+    ///
+    /// Ignores all bits after 256th.
+    #[cfg(feature = "bigint")]
+    pub fn from_biguint_lossy(uint: &num_bigint::BigUint) -> Self {
+        let mut bytes = uint.to_bytes_le();
+        bytes.resize(32, 0);
+        bytes.reverse();
+        Self::from_slice(&bytes)
+    }
+
     /// Wraps a reference to an internal array into a newtype reference.
     #[inline(always)]
     pub const fn wrap(value: &[u8; 32]) -> &Self {
