@@ -1,3 +1,5 @@
+#[cfg(feature = "tycho")]
+use std::num::NonZeroU8;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use tycho_crypto::ed25519;
@@ -910,14 +912,14 @@ pub struct WorkUnitsParamsFinalize {
 ///     broadcast_retry_millis:uint8
 ///     download_retry_millis:uint8
 ///     download_peers:uint8
-///     download_tasks:uint16
+///     min_sign_attempts:uint8
+///     download_peer_queries:uint8
 ///     sync_support_rounds:uint16
-///     broadcast_retry_attempts:uint8
 ///     = ConsensusConfig;
 /// ```
 #[cfg(feature = "tycho")]
 #[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
-#[tlb(tag = ["#d8", "#d9"])]
+#[tlb(tag = "#d8")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConsensusConfig {
     /// How far a ready-to-be-signed point (with time in its body)
@@ -925,20 +927,28 @@ pub struct ConsensusConfig {
     /// Lower bound is defined by genesis, and then advanced by leaders with every anchor.
     /// Anchor time is strictly increasing as it is inherited from anchor candidate in every point.
     ///
+    /// Cannot be zero because time guarantees are essential for the collator.
+    ///
     /// **NOTE: Affects overlay id.**
-    pub clock_skew_millis: u16,
+    pub clock_skew_millis: NonZeroU16,
 
     /// Hard limit on point payload. Excessive messages will be postponed.
     ///
+    /// Cannot be zero because blockchain config change requires an external message.
+    ///
     /// **NOTE: Affects overlay id.**
-    pub payload_batch_bytes: u32,
+    pub payload_batch_bytes: NonZeroU32,
 
     /// Limits amount of rounds included in anchor history (points that appears in commit).
     ///
+    /// Cannot be zero because commit history is essential.
+    ///
     /// **NOTE: Affects overlay id.**
-    pub commit_history_rounds: u16,
+    pub commit_history_rounds: NonZeroU16,
 
     /// Size (amount of rounds) of a sliding window to deduplicate external messages across anchors.
+    ///
+    /// Zero disables deduplication.
     ///
     /// **NOTE: Affects overlay id.**
     pub deduplicate_rounds: u16,
@@ -958,40 +968,58 @@ pub struct ConsensusConfig {
     ///
     /// Effectively defines feedback from block validation consensus to mempool consensus.
     ///
+    /// Cannot be zero because it must not be less than [`Self::commit_history_rounds`]
+    ///
     /// **NOTE: Affects overlay id.**
-    pub max_consensus_lag_rounds: u16,
+    pub max_consensus_lag_rounds: NonZeroU16,
 
     /// Hard limit on ring buffer size to cache external messages before they are taken into
     /// point payload. Newer messages may push older ones out of the buffer when limit is reached.
-    pub payload_buffer_bytes: u32,
+    ///
+    /// Cannot be zero because it must not be less than [`Self::payload_batch_bytes`].
+    pub payload_buffer_bytes: NonZeroU32,
 
     /// Every round an instance tries to gather as many points and signatures as it can
     /// within some time frame. It is a tradeoff between breaking current round
     /// on exactly 2F+1 items (points and/or signatures) and waiting for slow nodes.
-    pub broadcast_retry_millis: u16,
+    ///
+    /// Cannot be zero because it is a timeout inside a loop.
+    pub broadcast_retry_millis: NonZeroU16,
 
     /// Every missed dependency (point) is downloaded with a group of simultaneous requests to
     /// neighbour peers. Every new group of requests is spawned after previous group completed
     /// or this interval elapsed (in order not to wait for some slow responding peer).
-    pub download_retry_millis: u16,
+    ///
+    /// Cannot be zero because it is a timeout inside a loop.
+    pub download_retry_millis: NonZeroU16,
 
     /// Amount of peers to request at first download attempt. Amount will increase
     /// respectively at each attempt, until 2F peers successfully responded `None`
     /// or a verifiable point is found (incorrectly signed points do not count).
-    pub download_peers: u8,
+    ///
+    /// Cannot be zero because downloads must not be disabled.
+    pub download_peers: NonZeroU8,
 
-    /// Limits amount of unique points being simultaneously downloaded (except the first one).
-    pub download_tasks: u16,
+    /// Min required cycles to collect signatures before broadcast loop successfully finishes.
+    /// Greater values increase point delivery and create artificial delay for stable point rate.
+    ///
+    /// Cannot be zero because first attempt is essential.
+    pub min_sign_attempts: NonZeroU8,
+
+    /// Limits amount of simultaneous point downloads from one peer.
+    ///
+    /// Cannot be zero because downloads must not be disabled.
+    ///
+    /// **NOTE: Affects overlay id.**
+    pub download_peer_queries: NonZeroU8,
 
     /// Max duration (amount of rounds) at which local mempool is supposed to keep its history
     /// for neighbours to sync. Also limits DAG growth when it syncs, as sync takes time.
-    /// It also uses in OverlayId.
-    pub sync_support_rounds: u16,
-
-    /// Max retry attemts for broadcast
-    #[tlb(since_tag = 1)]
-    #[tlb(default = "2")]
-    pub broadcast_retry_attempts: u8,
+    ///
+    /// Zero does not make any sense.
+    ///
+    /// **NOTE: Affects overlay id.**
+    pub sync_support_rounds: NonZeroU16,
 }
 
 /// Consensus configuration params.
