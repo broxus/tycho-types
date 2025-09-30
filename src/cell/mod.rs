@@ -1148,7 +1148,7 @@ impl CellDescriptor {
     /// Computes d2 descriptor byte from cell length in bits
     #[inline(always)]
     pub const fn compute_d2(bit_len: u16) -> u8 {
-        (((bit_len >> 2) as u8) & !0b1) | ((bit_len % 8 != 0) as u8)
+        (((bit_len >> 2) as u8) & !0b1) | (!bit_len.is_multiple_of(8) as u8)
     }
 
     /// Constructs cell descriptor from descriptor bytes.

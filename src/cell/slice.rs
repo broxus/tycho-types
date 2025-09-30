@@ -1142,7 +1142,7 @@ impl<'a> CellSlice<'a> {
                     }
 
                     // Check the last byte (if not aligned)
-                    if bit_count % 8 != 0 {
+                    if !bit_count.is_multiple_of(8) {
                         data_ptr = data_ptr.add(1);
                         if (*data_ptr ^ target) & last_byte_mask != 0 {
                             return None;
@@ -1585,7 +1585,7 @@ impl<'a> CellSlice<'a> {
                     } else {
                         BigInt::from_bytes_be(Sign::Plus, buffer)
                     };
-                    if bits % 8 != 0 {
+                    if !bits.is_multiple_of(8) {
                         int >>= 8 - rem;
                     }
                     int
@@ -1607,7 +1607,7 @@ impl<'a> CellSlice<'a> {
                 let mut buffer = [0u8; 128];
                 self.load_raw(&mut buffer, bits).map(|buffer| {
                     let mut int = BigUint::from_bytes_be(buffer);
-                    if bits % 8 != 0 {
+                    if !bits.is_multiple_of(8) {
                         int >>= 8 - rem;
                     }
                     int

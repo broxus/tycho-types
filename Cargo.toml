@@ -3,7 +3,7 @@ name = "tycho-types"
 description = "A set of primitive types and utilities for the Tycho node."
 authors = ["Ivan Kalinin <i.kalinin@dexpa.io>"]
 repository = "https://github.com/broxus/tycho-types"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 include = ["src/**/*.rs", "benches/**/*.rs", "LICENSE-*", "README.md"]
@@ -96,8 +96,8 @@ thiserror = "2.0"
 tl-proto = { version = "0.5.3", optional = true }
 typeid = "1.0"
 
-tycho-types-proc = { version = "=0.2.0", path = "proc" }
-tycho-types-abi-proc = { version = "=0.2.0", path = "abi-proc", optional = true }
+tycho-types-proc = { version = "=0.3.0", path = "proc" }
+tycho-types-abi-proc = { version = "=0.3.0", path = "abi-proc", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"

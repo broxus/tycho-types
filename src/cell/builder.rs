@@ -1166,7 +1166,7 @@ impl CellDataBuilder {
         match x.to_u64() {
             Some(value) => self.store_uint(value, bits),
             None => {
-                let int = if bits % 8 != 0 {
+                let int = if !bits.is_multiple_of(8) {
                     let align = 8 - bits % 8;
                     Cow::Owned(x.clone() << align)
                 } else {
@@ -1227,7 +1227,7 @@ impl CellDataBuilder {
         match x.to_u64() {
             Some(value) => self.store_uint(value, bits),
             None => {
-                let int = if bits % 8 != 0 {
+                let int = if !bits.is_multiple_of(8) {
                     let align = 8 - bits % 8;
                     Cow::Owned(x.clone() << align)
                 } else {
