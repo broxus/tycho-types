@@ -150,7 +150,7 @@ impl AbiValue {
                 };
                 Size {
                     bits: bit_len,
-                    refs: 0
+                    refs: 0,
                 }
             }
             Self::Token(tokens) => Size {
@@ -491,9 +491,8 @@ impl AbiSerializer {
 
         match address {
             None => target.store_zeros(2),
-            Some(address) => address.store_into(target, Cell::empty_context())
+            Some(address) => address.store_into(target, Cell::empty_context()),
         }
-
     }
 
     fn write_tokens(&mut self, tokens: &Tokens) -> Result<(), Error> {

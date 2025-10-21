@@ -23,6 +23,8 @@ use crate::models::{
 use crate::num::Tokens;
 use crate::prelude::Dict;
 
+const PUBKEY_FIELD: &str = "_pubkey";
+
 /// Contract ABI definition.
 pub struct Contract {
     /// ABI version.
@@ -44,6 +46,9 @@ pub struct Contract {
 
     /// Contract storage fields.
     pub fields: Arc<[NamedAbiType]>,
+
+    /// A mapping with all contract getters by name. Supported for ABI 2.7 and later
+    pub getters: HashMap<Arc<str>, Getter>,
 }
 
 pub enum ContractInitData {
@@ -75,47 +80,13 @@ impl Contract {
         data: &Cell,
     ) -> Result<Cell> {
         if self.abi_version < AbiVersion::V2_4 {
-            self.update_init_data_internal(pubkey, tokens, data)
+            self.update_init_data_dict(pubkey, tokens, data)
         } else {
-            self.pack_init_fields_into_cell(tokens)
+            self.update_init_data_plain(pubkey, tokens, data)
         }
     }
 
-    fn pack_init_fields_into_cell(&self, tokens: &[NamedAbiValue]) -> Result<Cell> {
-        let ContractInitData::PlainFields(init_data) = &self.init_data else {
-            anyhow::bail!("Dict init_data is not supported for ABI version >= 2.4")
-        };
-
-        let mut init_values = Vec::with_capacity(self.fields.len());
-
-        let mut tokens_map = HashMap::<Arc<str>, AbiValue>::with_capacity_and_hasher(
-            tokens.len(),
-            Default::default(),
-        );
-
-        for i in tokens {
-            let i = i.clone();
-            tokens_map.insert(i.name, i.value);
-        }
-
-        for i in self.fields.as_ref() {
-            let token = tokens_map.remove_entry(i.name.as_ref());
-
-            if init_data.get(i.name.as_ref()).is_some() {
-                let (_, value) = token.ok_or(AbiError::UnexpectedInitDataParam(i.name.clone()))?;
-                init_values.push(value)
-            } else {
-                if let Some((name, _)) = token {
-                    return Err(AbiError::UnexpectedInitDataParam(name).into());
-                }
-                init_values.push(i.ty.make_default_value())
-            }
-        }
-        let cell = AbiValue::tuple_to_cell(init_values.as_ref(), self.abi_version)?;
-        Ok(cell)
-    }
-
-    fn update_init_data_internal(
+    fn update_init_data_dict(
         &self,
         pubkey: Option<&ed25519_dalek::VerifyingKey>,
         tokens: &[NamedAbiValue],
@@ -167,32 +138,83 @@ impl Contract {
         CellBuilder::build_from_ext(result, context).map_err(From::from)
     }
 
+    fn update_init_data_plain(
+        &self,
+        mut pubkey: Option<&ed25519_dalek::VerifyingKey>,
+        tokens: &[NamedAbiValue],
+        data: &Cell,
+    ) -> Result<Cell> {
+        let ContractInitData::PlainFields(init_data) = &self.init_data else {
+            anyhow::bail!("Dict init_data is not supported for ABI version >= 2.4")
+        };
+
+        let mut data_slice = data.as_slice()?;
+
+        let mut init_values = Vec::with_capacity(self.fields.len());
+
+        let mut tokens_map = HashMap::with_capacity_and_hasher(tokens.len(), Default::default());
+        for i in tokens {
+            tokens_map.insert(i.name.as_ref(), i.value.clone());
+        }
+
+        for i in self.fields.as_ref() {
+            let old_value = AbiValue::load_partial(&i.ty, self.abi_version, &mut data_slice)?;
+
+            let mut token = tokens_map.remove(i.name.as_ref());
+
+            if i.name.as_ref() == PUBKEY_FIELD
+                && let Some(pubkey) = pubkey.take()
+            {
+                // Overwrite pubkey if specified.
+                token = Some(AbiValue::Uint(
+                    256,
+                    HashBytes::wrap(pubkey.as_bytes()).as_biguint(),
+                ));
+            }
+
+            init_values.push(if let Some(token) = token {
+                anyhow::ensure!(
+                    init_data.contains(i.name.as_ref()),
+                    AbiError::UnexpectedInitDataParam(i.name.clone())
+                );
+                token
+            } else {
+                old_value
+            });
+        }
+
+        anyhow::ensure!(pubkey.is_none(), AbiError::PubkeyNotUsed);
+
+        let cell = AbiValue::tuple_to_cell(init_values.as_ref(), self.abi_version)?;
+        Ok(cell)
+    }
+
     /// Encodes an account data with the specified initial parameters.
     ///
     /// NOTE: `tokens` can be a subset of init data fields, all other
     /// will be set to default.
     pub fn encode_init_data(
         &self,
-        pubkey: &ed25519_dalek::VerifyingKey,
+        pubkey: Option<&ed25519_dalek::VerifyingKey>,
         tokens: &[NamedAbiValue],
     ) -> Result<Cell> {
         if self.abi_version < AbiVersion::V2_4 {
-            self.encode_init_data_internal(pubkey, tokens)
+            self.encode_init_data_dict(pubkey, tokens)
         } else {
-            self.pack_init_fields_into_cell(tokens)
+            self.encode_init_data_plain(pubkey, tokens)
         }
     }
 
-    fn encode_init_data_internal(
+    fn encode_init_data_dict(
         &self,
-        pubkey: &ed25519_dalek::VerifyingKey,
+        pubkey: Option<&ed25519_dalek::VerifyingKey>,
         tokens: &[NamedAbiValue],
     ) -> Result<Cell> {
-        let mut result = RawDict::<64>::new();
-
         let ContractInitData::Dict(init_data) = &self.init_data else {
             anyhow::bail!("Plain init fields are not supported")
         };
+
+        let mut result = RawDict::<64>::new();
 
         let mut init_data = init_data
             .iter()
@@ -239,12 +261,62 @@ impl Contract {
         key_builder.store_u64(0)?;
         result.set_ext(
             key_builder.as_data_slice(),
-            &CellBuilder::from_raw_data(pubkey.as_bytes(), 256)?.as_data_slice(),
+            &CellBuilder::from_raw_data(
+                pubkey.map(|value| value.as_bytes()).unwrap_or(&[0; 32]),
+                256,
+            )?
+            .as_data_slice(),
             context,
         )?;
 
         // Encode init data as mapping
         CellBuilder::build_from_ext(result, context).map_err(From::from)
+    }
+
+    fn encode_init_data_plain(
+        &self,
+        mut pubkey: Option<&ed25519_dalek::VerifyingKey>,
+        tokens: &[NamedAbiValue],
+    ) -> Result<Cell> {
+        let ContractInitData::PlainFields(init_data) = &self.init_data else {
+            anyhow::bail!("Dict init_data is not supported for ABI version >= 2.4")
+        };
+
+        let mut init_values = Vec::with_capacity(self.fields.len());
+
+        let mut tokens_map = HashMap::with_capacity_and_hasher(tokens.len(), Default::default());
+        for i in tokens {
+            tokens_map.insert(i.name.as_ref(), i.value.clone());
+        }
+
+        for i in self.fields.as_ref() {
+            let mut token = tokens_map.remove(i.name.as_ref());
+
+            if i.name.as_ref() == PUBKEY_FIELD
+                && let Some(pubkey) = pubkey.take()
+            {
+                // Overwrite pubkey if specified.
+                token = Some(AbiValue::Uint(
+                    256,
+                    HashBytes::wrap(pubkey.as_bytes()).as_biguint(),
+                ));
+            }
+
+            init_values.push(if init_data.contains(i.name.as_ref()) {
+                token.ok_or_else(|| AbiError::InitDataFieldNotFound(i.name.clone()))?
+            } else {
+                anyhow::ensure!(
+                    token.is_none(),
+                    AbiError::UnexpectedInitDataParam(i.name.clone())
+                );
+                i.ty.make_default_value()
+            });
+        }
+
+        anyhow::ensure!(pubkey.is_none(), AbiError::PubkeyNotUsed);
+
+        let cell = AbiValue::tuple_to_cell(init_values.as_ref(), self.abi_version)?;
+        Ok(cell)
     }
 
     /// Tries to parse init data fields of this contract from an account data.
@@ -372,6 +444,8 @@ impl<'de> Deserialize<'de> for Contract {
             data: Vec<InitData>,
             #[serde(default)]
             fields: Vec<SerdeNamedAbiType>,
+            #[serde(default)]
+            getters: Vec<SerdeFunction>,
         }
 
         #[derive(Deserialize)]
@@ -442,6 +516,23 @@ impl<'de> Deserialize<'de> for Contract {
             })
             .collect();
 
+        let getters = contract
+            .getters
+            .into_iter()
+            .map(|item| {
+                let id = match item.id {
+                    Some(Id(id)) => id,
+                    None => Getter::compute_getter_id::<&str>(item.name.as_ref()),
+                };
+                let name = Arc::<str>::from(item.name);
+                (name.clone(), Getter {
+                    name,
+                    outputs: Arc::from(item.outputs),
+                    id,
+                })
+            })
+            .collect();
+
         let events = contract
             .events
             .into_iter()
@@ -497,7 +588,54 @@ impl<'de> Deserialize<'de> for Contract {
                     .map(|x| x.named_abi_type)
                     .collect::<Vec<_>>(),
             ),
+            getters,
         })
+    }
+}
+
+/// Helper trait to convert various types to u32 getter id
+pub trait AsGetterMethodId {
+    fn as_getter_method_id(&self) -> u32;
+}
+
+impl<T: AsGetterMethodId + ?Sized> AsGetterMethodId for &T {
+    fn as_getter_method_id(&self) -> u32 {
+        T::as_getter_method_id(*self)
+    }
+}
+
+impl<T: AsGetterMethodId + ?Sized> AsGetterMethodId for &mut T {
+    fn as_getter_method_id(&self) -> u32 {
+        T::as_getter_method_id(*self)
+    }
+}
+
+impl AsGetterMethodId for u32 {
+    fn as_getter_method_id(&self) -> u32 {
+        *self
+    }
+}
+
+impl AsGetterMethodId for str {
+    fn as_getter_method_id(&self) -> u32 {
+        let crc = crate::crc::crc_16(self.as_bytes());
+        crc as u32 | 0x10000
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Getter {
+    /// Getter name.
+    pub name: Arc<str>,
+    /// Getter output types
+    pub outputs: Arc<[NamedAbiType]>,
+    /// Getter id
+    pub id: u32,
+}
+
+impl Getter {
+    pub fn compute_getter_id<T: AsGetterMethodId>(input: T) -> u32 {
+        input.as_getter_method_id()
     }
 }
 

@@ -33,7 +33,7 @@ impl AnyAddr {
     /// Returns the number of data bits that this struct occupies.
     pub fn bit_len(&self) -> u16 {
         match self {
-            AnyAddr::None => 2, //2 bits of zeroes
+            AnyAddr::None => 2, // 2 bits of zeroes
             AnyAddr::Ext(addr) => addr.bit_len(),
             AnyAddr::Std(addr) => addr.bit_len(),
             AnyAddr::Var(addr) => addr.bit_len(),

@@ -203,7 +203,7 @@ impl AbiValue {
                 let address_opt = match AnyAddr::load_from(slice)? {
                     AnyAddr::None => None,
                     AnyAddr::Std(addr) => Some(addr),
-                    _ => anyhow::bail!("Expected StdAddr or None")
+                    _ => anyhow::bail!("Expected StdAddr or None"),
                 };
                 Ok(Self::AddressStd(Box::new(address_opt)))
             }
@@ -467,13 +467,10 @@ fn load_fixed_bytes(
         Ok(Bytes::copy_from_slice(result))
     } else {
         let bytes = ok!(load_bytes(version, last, slice));
-        anyhow::ensure!(
-            bytes.len() == len,
-            AbiError::BytesSizeMismatch {
-                expected: len,
-                len: bytes.len()
-            }
-        );
+        anyhow::ensure!(bytes.len() == len, AbiError::BytesSizeMismatch {
+            expected: len,
+            len: bytes.len()
+        });
         Ok(bytes)
     }
 }

@@ -1,9 +1,10 @@
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::hash::Hash;
 use std::num::NonZeroU8;
 use std::str::FromStr;
 use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 
 use super::error::{ParseAbiTypeError, ParseNamedAbiTypeError};
 use crate::abi::{AbiVersion, WithoutName};
@@ -387,7 +388,7 @@ impl AbiType {
             },
             Self::AddressStd => CellTreeStats {
                 bit_count: StdAddr::BITS_MAX as _,
-                cell_count: 0
+                cell_count: 0,
             },
             Self::Token => CellTreeStats {
                 bit_count: Tokens::MAX_BITS as _,

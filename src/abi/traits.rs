@@ -13,7 +13,7 @@ use super::{
     AbiType, AbiValue, NamedAbiType, NamedAbiValue, PlainAbiType, PlainAbiValue, WithoutName,
 };
 use crate::cell::{Cell, HashBytes, Lazy};
-use crate::models::message::{IntAddr, StdAddr, VarAddr, AnyAddr, ExtAddr};
+use crate::models::message::{AnyAddr, ExtAddr, IntAddr, StdAddr, VarAddr};
 use crate::num::*;
 
 /// ABI entity wrapper.
@@ -1126,27 +1126,14 @@ impl FromAbi for VarAddr {
 
 impl FromAbi for ExtAddr {
     fn from_abi(value: AbiValue) -> Result<Self> {
-        if let AbiValue::Address(address) = &value {
-            if let AnyAddr::Ext(address) = address.as_ref() {
-                return Ok(address.clone());
-            }
+        if let AbiValue::Address(address) = &value
+            && let AnyAddr::Ext(address) = address.as_ref()
+        {
+            return Ok(address.clone());
         }
         Err(expected_type("ext address", &value))
     }
 }
-
-// impl FromAbi for Option<ExtAddr> {
-//     fn from_abi(value: AbiValue) -> Result<Self> {
-//         if let AbiValue::Address(address) = &value {
-//             match address.as_ref() {
-//                 AnyAddr::Std(_) | AnyAddr::Var(_) => (),
-//                 AnyAddr::Ext(addr) => return Ok(Some(addr.clone())),
-//                 AnyAddr::None => return Ok(None),
-//             }
-//         }
-//         Err(expected_type("ext address", &value))
-//     }
-// }
 
 impl FromPlainAbi for VarAddr {
     fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {

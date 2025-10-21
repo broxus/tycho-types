@@ -5,11 +5,12 @@ use num_bigint::BigInt;
 
 use crate::abi::contract::ContractInitData;
 use crate::abi::*;
-use crate::models::StdAddr;
+use crate::models::{AnyAddr, StdAddr};
 use crate::prelude::{Cell, CellBuilder, CellFamily, HashBytes, RawDict, Store};
 
 const DEPOOL_ABI: &str = include_str!("depool.abi.json");
 const ABI_V2_4: &str = include_str!("contract_v24.abi.json");
+const ABI_V2_7: &str = include_str!("wallet_v27.abi.json");
 
 #[test]
 fn decode_json_abi() {
@@ -34,43 +35,157 @@ fn decode_json_abi_v24() {
     assert_eq!(contract.abi_version, AbiVersion::V2_4);
     assert_eq!(contract.functions.len(), 5);
     assert_eq!(contract.events.len(), 3);
-    assert_eq!(contract.fields.len(), 2);
+    assert_eq!(contract.fields.len(), 4);
 
     let ContractInitData::PlainFields(fields) = &contract.init_data else {
         panic!("init data is not supported");
     };
 
-    assert_eq!(fields.len(), 1);
+    assert_eq!(fields.len(), 2);
 
-    let key = ed25519_dalek::SigningKey::from([0u8; 32]);
+    let key = ed25519_dalek::SigningKey::from([1u8; 32]);
     let pubkey = ed25519_dalek::VerifyingKey::from(&key);
 
-    if let Err(e) = contract.encode_init_data(
-        &pubkey,
-        &[NamedAbiValue {
-            name: Arc::from("a"),
-            value: AbiValue::Int(128, BigInt::from(0)),
-        }],
-    ) {
+    if let Err(e) = contract.encode_init_data(Some(&pubkey), &[NamedAbiValue {
+        name: Arc::from("x"),
+        value: AbiValue::Int(128, BigInt::from(0)),
+    }]) {
         println!("Expected to fail because of unexpected field name. Err: {e:?}");
     }
 
     let init_values = vec![NamedAbiValue {
-        name: Arc::from("b"),
-        value: AbiValue::Int(128, BigInt::from(0)),
+        name: Arc::from("d"),
+        value: AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(
+            0,
+            HashBytes::default(),
+        )))),
     }];
 
     let cell = contract
-        .encode_init_data(&pubkey, init_values.as_ref())
+        .encode_init_data(Some(&pubkey), init_values.as_ref())
         .unwrap();
 
     let fields = contract.decode_init_data(cell.as_ref()).unwrap();
 
-    assert_eq!(init_values, fields);
+    let init = vec![
+        NamedAbiValue {
+            name: Arc::from("_pubkey"),
+            value: AbiValue::FixedBytes(Bytes::copy_from_slice(pubkey.as_bytes())),
+        },
+        NamedAbiValue {
+            name: Arc::from("d"),
+            value: AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(
+                0,
+                HashBytes::default(),
+            )))),
+        },
+    ];
+    assert_eq!(init, fields);
+
+    let new_init_values = vec![NamedAbiValue {
+        name: Arc::from("d"),
+        value: AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(
+            -1,
+            HashBytes::default(),
+        )))),
+    }];
+
+    let new_cell = contract
+        .update_init_data(Some(&pubkey), &new_init_values, &cell)
+        .unwrap();
+
+    assert_ne!(cell, new_cell);
+
+    let new_fields = contract.decode_init_data(new_cell.as_ref()).unwrap();
+    assert_ne!(new_fields, fields);
+
+    let new_init = vec![
+        NamedAbiValue {
+            name: Arc::from("_pubkey"),
+            value: AbiValue::FixedBytes(Bytes::copy_from_slice(pubkey.as_bytes())),
+        },
+        NamedAbiValue {
+            name: Arc::from("d"),
+            value: AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(
+                -1,
+                HashBytes::default(),
+            )))),
+        },
+    ];
+
+    assert_eq!(new_init, new_fields);
 
     let function = contract.find_function_by_id(0x01234567, true).unwrap();
     assert_eq!(function.input_id, 0x01234567);
     assert_eq!(function.name.as_ref(), "has_id");
+}
+
+#[test]
+fn decode_27_init_data() {
+    use crate::models::StateInit;
+    use crate::prelude::Boc;
+    let abi: &str = r#"
+            {
+            "ABI version": 2,
+            "version": "2.7",
+            "header": ["time"],
+            "functions": [
+                {
+                    "name": "constructor",
+                    "id": "0x15A038FB",
+                    "inputs": [
+                        {"name":"walletCode","type":"cell"},
+                        {"name":"walletVersion","type":"uint32"},
+                        {"name":"sender","type":"address"},
+                        {"name":"remainingGasTo","type":"address"}
+                    ],
+                    "outputs": [
+                    ]
+                }
+            ],
+            "getters": [
+            ],
+            "events": [
+            ],
+            "fields": [
+                {"init":true,"name":"_pubkey","type":"fixedbytes32"},
+                {"init":false,"name":"_timestamp","type":"uint64"},
+                {"init":false,"name":"_constructorFlag","type":"bool"},
+                {"init":true,"name":"root","type":"address"},
+                {"init":true,"name":"owner","type":"address"}
+            ]
+        }
+    "#;
+    let contract = serde_json::from_str::<Contract>(abi).unwrap();
+    let state_init = "te6ccgECEQEAAh8AAgE0AwEBkwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAClpUZkiqXET1LlWmUdabCyx23t4PU866Vze+okEWE5ZIAgBDgBKujOHFR/zpQkRw7J6dw7JSEbq3q0AB7+WeyeICA5ZP8AES/wD0pBP0vPILBAIBIAYFAoTyf4n4aSHbPNMAAY4UgwjXGCD4KMjOzsn5AFj4QvkQ8qje0z8B+EMhufK0IPgjgQPoqIIIG3dAoLnytPhj0x8x8jwODwICxQgHAROyAgw2zz4D/IAgCwNj2OHaiaECAoGuQ64UAfDMRaGmB/SAYfDTUnABuEOOAcYEQ64aP+V4Q8YGA+lIQelD5HkQEAkEaqAVoDj7+EJu4wD4RvJz1NMf+kDU0dD6QNH4SfhKxwUgjxIwIYnHBbMgjogwIds8+EnHBd7fDw4NCgI8joVUcyDbPI4QIMjPhQjOgG/PQMmBAKD7AOJfBNs8DAsALPhK+EP4QsjL/8s/z4PO+EvIzs3J7VQARPhKyM74S88WgQCgz0ASyx/O+CoBzCH7BAHQ7R7tU8nxGAgATPhKyIEBQc9AzgHIzs3J+CrIz4SA9AD0AM+ByfkAyM+KAEDL/8nQAEOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQADbtRNDT/9M/0wD6QNTR0PpA0fhr+Gr4Zvhj+GIACvhG8uBM";
+
+    let cell = Boc::decode_base64(state_init).unwrap();
+    let state_init = cell.parse::<StateInit>().unwrap();
+
+    let data = state_init.data.unwrap();
+
+    let x = contract.decode_init_data(data.as_ref()).unwrap();
+    assert_eq!(x.len(), 3);
+}
+
+#[test]
+fn decode_abi_v27() {
+    let contract: Contract = serde_json::from_str::<Contract>(ABI_V2_7).unwrap();
+    assert_eq!(contract.abi_version, AbiVersion::V2_7);
+    assert_eq!(contract.functions.len(), 14);
+    assert_eq!(contract.events.len(), 0);
+    assert_eq!(contract.fields.len(), 6);
+
+    let ContractInitData::PlainFields(fields) = &contract.init_data else {
+        panic!("init data is not supported");
+    };
+
+    assert_eq!(fields.len(), 3);
+
+    let getter = contract.getters.get("get_wallet_data").unwrap();
+
+    assert_eq!(getter.id, 0x17B02);
+    assert_eq!(getter.outputs.len(), 4);
 }
 
 #[test]
@@ -320,7 +435,7 @@ fn encode_empty_init_data() {
         CellBuilder::build_from(dict).unwrap()
     };
 
-    let init_data = contract.encode_init_data(&pubkey, &[]).unwrap();
+    let init_data = contract.encode_init_data(Some(&pubkey), &[]).unwrap();
 
     assert_eq!(init_data, expected);
 }

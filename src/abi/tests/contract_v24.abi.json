@@ -51,6 +51,8 @@
   ],
   "fields": [
     { "name": "a", "type": "uint32" },
-    { "name": "b", "type": "int128", "init": true }
+    { "name": "_pubkey", "type": "fixedbytes32", "init": true },
+    { "name": "c", "type": "int128"},
+    { "name": "d", "type": "address", "init": true }
   ]
 }

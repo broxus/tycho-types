@@ -58,6 +58,12 @@ impl AbiVersion {
     /// Same as 2.3 but init_data is replaced with init fields in abi
     pub const V2_4: Self = Self::new(2, 4);
 
+    /// Same as 2.4 but [`AbiType::AddressStd`] is recommended to use to represent address.
+    /// Contract getters are added. Similar to functions but getters can not be called on-chain, only off-chain
+    ///
+    /// [`AbiType::AddressStd`]: crate::abi::AbiType::AddressStd
+    pub const V2_7: Self = Self::new(2, 7);
+
     /// Creates an ABI version from components.
     pub const fn new(major: u8, minor: u8) -> Self {
         Self { major, minor }
