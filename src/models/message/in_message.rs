@@ -179,7 +179,6 @@ impl InMsg {
                 let info = ok!(env.load_message_info());
 
                 let mut value_imported = info.value;
-                ok!(value_imported.try_add_assign_tokens(info.ihr_fee));
                 ok!(value_imported.try_add_assign_tokens(env.fwd_fee_remaining));
 
                 ImportFees {
@@ -196,7 +195,6 @@ impl InMsg {
                 let info = ok!(env.load_message_info());
 
                 let mut value_imported = info.value;
-                ok!(value_imported.try_add_assign_tokens(info.ihr_fee));
                 ok!(value_imported.try_add_assign_tokens(env.fwd_fee_remaining));
 
                 ImportFees {

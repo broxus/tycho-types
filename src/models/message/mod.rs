@@ -2,6 +2,8 @@
 
 use std::borrow::Borrow;
 
+use bitflags::bitflags;
+
 pub use self::address::*;
 pub use self::envelope::*;
 pub use self::in_message::*;
@@ -577,7 +579,7 @@ impl From<IntMsgInfo> for RelaxedMsgInfo {
             src: Some(info.src),
             dst: info.dst,
             value: info.value,
-            ihr_fee: info.ihr_fee,
+            extra_flags: info.extra_flags,
             fwd_fee: info.fwd_fee,
             created_lt: info.created_lt,
             created_at: info.created_at,
@@ -845,10 +847,8 @@ pub struct IntMsgInfo {
     pub dst: IntAddr,
     /// Attached amounts.
     pub value: CurrencyCollection,
-    /// IHR fee.
-    ///
-    /// NOTE: currently unused, but can be used to split attached amount.
-    pub ihr_fee: Tokens,
+    /// Extra flags. Enables v12 bounce format for the message.
+    pub extra_flags: MessageExtraFlags,
     /// Forwarding fee paid for using the routing.
     pub fwd_fee: Tokens,
     /// Logical time when the message was created.
@@ -866,7 +866,7 @@ impl Default for IntMsgInfo {
             src: Default::default(),
             dst: Default::default(),
             value: CurrencyCollection::ZERO,
-            ihr_fee: Default::default(),
+            extra_flags: Default::default(),
             fwd_fee: Default::default(),
             created_lt: 0,
             created_at: 0,
@@ -880,7 +880,7 @@ impl IntMsgInfo {
         3 + self.src.bit_len()
             + self.dst.bit_len()
             + self.value.bit_len()
-            + self.ihr_fee.unwrap_bit_len()
+            + self.extra_flags.bit_len()
             + self.fwd_fee.unwrap_bit_len()
             + 64
             + 32
@@ -899,7 +899,7 @@ impl Store for IntMsgInfo {
         ok!(self.src.store_into(builder, context));
         ok!(self.dst.store_into(builder, context));
         ok!(self.value.store_into(builder, context));
-        ok!(self.ihr_fee.store_into(builder, context));
+        ok!(self.extra_flags.store_into(builder, context));
         ok!(self.fwd_fee.store_into(builder, context));
         ok!(builder.store_u64(self.created_lt));
         builder.store_u32(self.created_at)
@@ -916,7 +916,7 @@ impl<'a> Load<'a> for IntMsgInfo {
             src: ok!(IntAddr::load_from(slice)),
             dst: ok!(IntAddr::load_from(slice)),
             value: ok!(CurrencyCollection::load_from(slice)),
-            ihr_fee: ok!(Tokens::load_from(slice)),
+            extra_flags: ok!(MessageExtraFlags::load_from(slice)),
             fwd_fee: ok!(Tokens::load_from(slice)),
             created_lt: ok!(slice.load_u64()),
             created_at: ok!(slice.load_u32()),
@@ -941,10 +941,8 @@ pub struct RelaxedIntMsgInfo {
     pub dst: IntAddr,
     /// Attached amounts.
     pub value: CurrencyCollection,
-    /// IHR fee.
-    ///
-    /// NOTE: currently unused, but can be used to split attached amount.
-    pub ihr_fee: Tokens,
+    /// Extra flags. Enables v12 bounce format for the message.
+    pub extra_flags: MessageExtraFlags,
     /// Forwarding fee paid for using the routing.
     pub fwd_fee: Tokens,
     /// Logical time when the message was created.
@@ -962,7 +960,7 @@ impl Default for RelaxedIntMsgInfo {
             src: Default::default(),
             dst: Default::default(),
             value: CurrencyCollection::ZERO,
-            ihr_fee: Default::default(),
+            extra_flags: Default::default(),
             fwd_fee: Default::default(),
             created_lt: 0,
             created_at: 0,
@@ -976,7 +974,7 @@ impl RelaxedIntMsgInfo {
         3 + compute_opt_int_addr_bit_len(&self.src)
             + self.dst.bit_len()
             + self.value.bit_len()
-            + self.ihr_fee.unwrap_bit_len()
+            + self.extra_flags.bit_len()
             + self.fwd_fee.unwrap_bit_len()
             + 64
             + 32
@@ -995,7 +993,7 @@ impl Store for RelaxedIntMsgInfo {
         ok!(store_opt_int_addr(builder, context, &self.src));
         ok!(self.dst.store_into(builder, context));
         ok!(self.value.store_into(builder, context));
-        ok!(self.ihr_fee.store_into(builder, context));
+        ok!(self.extra_flags.store_into(builder, context));
         ok!(self.fwd_fee.store_into(builder, context));
         ok!(builder.store_u64(self.created_lt));
         builder.store_u32(self.created_at)
@@ -1012,7 +1010,7 @@ impl<'a> Load<'a> for RelaxedIntMsgInfo {
             src: ok!(load_opt_int_addr(slice)),
             dst: ok!(IntAddr::load_from(slice)),
             value: ok!(CurrencyCollection::load_from(slice)),
-            ihr_fee: ok!(Tokens::load_from(slice)),
+            extra_flags: ok!(MessageExtraFlags::load_from(slice)),
             fwd_fee: ok!(Tokens::load_from(slice)),
             created_lt: ok!(slice.load_u64()),
             created_at: ok!(slice.load_u32()),
@@ -1250,4 +1248,248 @@ fn load_opt_int_addr(slice: &mut CellSlice<'_>) -> Result<Option<IntAddr>, Error
     } else {
         Err(Error::InvalidTag)
     }
+}
+
+bitflags! {
+    /// TVM v12 message bounce flags.
+    #[derive(Default, Debug, Clone, Copy, Eq, PartialEq)]
+    pub struct MessageExtraFlags: u8 {
+        /// Whether new bounce format is expected.
+        const NEW_BOUNCE_FORMAT = 0b01;
+        /// Whether full body should be attached to the bounced message.
+        const FULL_BODY_IN_BOUNCED = 0b10;
+    }
+}
+
+impl MessageExtraFlags {
+    /// Converts physical representation into flags (if well-formed).
+    #[inline]
+    pub const fn from_stored(tokens: Tokens) -> Option<Self> {
+        let value = tokens.into_inner();
+        if value <= u8::MAX as u128 {
+            Self::from_bits(value as u8)
+        } else {
+            None
+        }
+    }
+
+    /// Convert flags into its physical representation (varint).
+    #[inline]
+    pub const fn as_stored(&self) -> Tokens {
+        Tokens::new(self.bits() as _)
+    }
+
+    /// Returns `true` if new bounce format is enabled.
+    #[inline]
+    pub const fn is_new_bounce_format(&self) -> bool {
+        self.contains(Self::NEW_BOUNCE_FORMAT)
+    }
+
+    /// Returns `true` if extended info should be attached in case of bounce.
+    #[inline]
+    pub const fn is_full_body_in_bounced(&self) -> bool {
+        self.contains(Self::FULL_BODY_IN_BOUNCED)
+    }
+
+    /// Returns the number of data bits that this struct occupies.
+    pub const fn bit_len(&self) -> u16 {
+        Tokens::LEN_BITS + 8 * (self.bits() != 0) as u16
+    }
+}
+
+impl Store for MessageExtraFlags {
+    #[inline]
+    fn store_into(
+        &self,
+        builder: &mut CellBuilder,
+        context: &dyn CellContext,
+    ) -> Result<(), Error> {
+        self.as_stored().store_into(builder, context)
+    }
+}
+
+impl<'a> Load<'a> for MessageExtraFlags {
+    #[inline]
+    fn load_from(slice: &mut CellSlice<'a>) -> Result<Self, Error> {
+        Self::from_stored(Tokens::load_from(slice)?).ok_or(Error::InvalidData)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for MessageExtraFlags {
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SerdeMessageExtraFlags {
+            new_bounce_format: self.contains(Self::NEW_BOUNCE_FORMAT),
+            full_body_in_bounced: self.contains(Self::FULL_BODY_IN_BOUNCED),
+        }
+        .serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for MessageExtraFlags {
+    #[inline]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let flags = SerdeMessageExtraFlags::deserialize(deserializer)?;
+        let mut result = Self::empty();
+        result.set(Self::NEW_BOUNCE_FORMAT, flags.new_bounce_format);
+        result.set(Self::FULL_BODY_IN_BOUNCED, flags.full_body_in_bounced);
+        Ok(result)
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SerdeMessageExtraFlags {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    new_bounce_format: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    full_body_in_bounced: bool,
+}
+
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for MessageExtraFlags {
+    #[inline]
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        u.arbitrary::<u8>().map(Self::from_bits_truncate)
+    }
+}
+
+/// New bounce message body.
+#[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
+#[tlb(tag = "#fffffffe")]
+pub struct NewBounceBody {
+    /// Cell that contains the body of the original message.
+    /// If [`MessageExtraFlags::is_full_body_in_bounced`] returns true,
+    /// then the whole body is returned, otherwise it is only the root without refs.
+    pub original_body: Cell,
+    /// Original message info
+    pub original_info: Lazy<NewBounceOriginalInfo>,
+    /// Id of a failed phase.
+    ///  - `0` - compute phase was skipped. [`exit_code`] denotes the skip reason:
+    ///     - `exit_code = -1` - no state (account is uninit or frozen, and no state init is present in the message).
+    ///     - `exit_code = -2` - bad state (account is uninit or frozen, and state init in the message has the wrong hash).
+    ///     - `exit_code = -3` - no gas.
+    ///     - `exit_code = -4` - account is suspended.
+    /// - `1` - compute phase failed. `exit_code` is the value from the compute phase.
+    /// - `2` - action phase failed. `exit_code` is the value from the action phase.
+    ///
+    /// [`exit_code`]: NewBounceBody::exit_code
+    pub bounced_by_phase: u8,
+    /// Exit code (or a skip reason if compute phase was skipped).
+    pub exit_code: i32,
+    /// Compute phase info
+    pub compute_phase: Option<NewBounceComputePhaseInfo>,
+}
+
+impl NewBounceBody {
+    /// State of [`NewBounceBody::bounced_by_phase`] when compute phase was skipped.
+    pub const COMPUTE_PHASE_SKIPPED: u8 = 0;
+    /// State of [`NewBounceBody::bounced_by_phase`] when compute phase failed.
+    pub const COMPUTE_PHASE_FAILED: u8 = 1;
+    /// State of [`NewBounceBody::bounced_by_phase`] when action phase failed.
+    pub const ACTION_PHASE_FAILED: u8 = 2;
+
+    /// State of [`NewBounceBody::exit_code`] when there was no state.
+    pub const EXIT_CODE_NO_STATE: i32 = -1;
+    /// State of [`NewBounceBody::exit_code`] when there was an invalid state.
+    pub const EXIT_CODE_BAD_STATE: i32 = -2;
+    /// State of [`NewBounceBody::exit_code`] when there was not enough gas.
+    pub const EXIT_CODE_NO_GAS: i32 = -3;
+    /// State of [`NewBounceBody::exit_code`] when the account was suspended.
+    pub const EXIT_CODE_SUSPENDED: i32 = -4;
+
+    /// Get a structured bounce reason info (if well-formed).
+    pub const fn bounce_reason(&self) -> Option<BounceReason> {
+        Some(match self.bounced_by_phase {
+            0 => BounceReason::ComputePhaseSkipped(match self.exit_code {
+                Self::EXIT_CODE_NO_STATE => {
+                    crate::models::transaction::ComputePhaseSkipReason::NoState
+                }
+                Self::EXIT_CODE_BAD_STATE => {
+                    crate::models::transaction::ComputePhaseSkipReason::BadState
+                }
+                Self::EXIT_CODE_NO_GAS => crate::models::transaction::ComputePhaseSkipReason::NoGas,
+                Self::EXIT_CODE_SUSPENDED => {
+                    crate::models::transaction::ComputePhaseSkipReason::Suspended
+                }
+                _ => return None,
+            }),
+            1 => BounceReason::ComputePhaseFailed {
+                exit_code: self.exit_code,
+            },
+            2 => BounceReason::ActionPhaseFailed {
+                result_code: self.exit_code,
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// Structured bounce reason derived from [`NewBounceBody`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BounceReason {
+    /// Compute phase was skipped.
+    ComputePhaseSkipped(crate::models::transaction::ComputePhaseSkipReason),
+    /// Compute phase failed.
+    ComputePhaseFailed {
+        /// Exit code of the compute phase.
+        exit_code: i32,
+    },
+    /// Action phase failed.
+    ActionPhaseFailed {
+        /// Result code of the action phase.
+        result_code: i32,
+    },
+}
+
+impl BounceReason {
+    /// Flattens the struct into a tuple of [`NewBounceBody::bounced_by_phase`]
+    /// and [`NewBounceBody::exit_code`].
+    pub const fn flatten(&self) -> (u8, i32) {
+        match self {
+            Self::ComputePhaseSkipped(reason) => {
+                let exit_code = match reason {
+                    crate::models::ComputePhaseSkipReason::NoState => {
+                        NewBounceBody::EXIT_CODE_NO_STATE
+                    }
+                    crate::models::ComputePhaseSkipReason::BadState => {
+                        NewBounceBody::EXIT_CODE_BAD_STATE
+                    }
+                    crate::models::ComputePhaseSkipReason::NoGas => NewBounceBody::EXIT_CODE_NO_GAS,
+                    crate::models::ComputePhaseSkipReason::Suspended => {
+                        NewBounceBody::EXIT_CODE_SUSPENDED
+                    }
+                };
+                (NewBounceBody::COMPUTE_PHASE_SKIPPED, exit_code)
+            }
+            Self::ComputePhaseFailed { exit_code } => {
+                (NewBounceBody::COMPUTE_PHASE_FAILED, *exit_code)
+            }
+            Self::ActionPhaseFailed { result_code } => {
+                (NewBounceBody::ACTION_PHASE_FAILED, *result_code)
+            }
+        }
+    }
+}
+
+/// Original message info
+#[derive(Default, Debug, Clone, Eq, PartialEq, Store, Load)]
+pub struct NewBounceOriginalInfo {
+    /// Original message info.
+    pub value: CurrencyCollection,
+    /// Original created lt.
+    pub created_lt: u64,
+    /// Original created at.
+    pub created_at: u32,
+}
+
+/// Compute phase info.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Store, Load)]
+pub struct NewBounceComputePhaseInfo {
+    /// Gas used in compute phase
+    pub gas_used: u32,
+    /// Performed VM steps during compute phase.
+    pub vm_steps: u32,
 }

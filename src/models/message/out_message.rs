@@ -163,7 +163,6 @@ impl OutMsg {
             let info = ok!(envelope.load_message_info());
 
             let mut result = info.value;
-            ok!(result.try_add_assign_tokens(info.ihr_fee));
             ok!(result.try_add_assign_tokens(envelope.fwd_fee_remaining));
             result
         } else {

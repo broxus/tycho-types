@@ -213,3 +213,12 @@ fn internal_message_with_deploy_special() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn extra_flags_bit_len_same_as_tokens() {
+    for bits in 0..=MessageExtraFlags::all().bits() {
+        let flags = MessageExtraFlags::from_bits_retain(bits);
+        assert_eq!(flags.bit_len(), flags.as_stored().unwrap_bit_len());
+        assert_eq!(flags.bit_len(), Tokens::new(bits as _).unwrap_bit_len());
+    }
+}
