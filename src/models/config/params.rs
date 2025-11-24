@@ -1242,9 +1242,62 @@ impl ValidatorSet {
         Some((subset, hash_short))
     }
 
+    /// Computes a masterchain validator subset using a zero seed.
+    /// Preserves original validator indexes inside vset.
+    ///
+    /// NOTE: In most cases you should use the more generic [`ValidatorSet::compute_subset`].
+    pub fn compute_mc_subset_indexed(
+        &self,
+        cc_seqno: u32,
+        shuffle: bool,
+    ) -> Option<(Vec<IndexedValidatorDescription>, u32)> {
+        let total = self.list.len();
+        let main = self.main.get() as usize;
+
+        let count = std::cmp::min(total, main);
+        let subset = if !shuffle {
+            self.list[0..count]
+                .iter()
+                .enumerate()
+                .map(|(i, desc)| IndexedValidatorDescription {
+                    desc: desc.clone(),
+                    validator_idx: i as u16,
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let mut prng = ValidatorSetPRNG::new(ShardIdent::MASTERCHAIN, cc_seqno);
+
+            let mut indices = vec![0; count];
+            for i in 0..count {
+                let j = prng.next_ranged(i as u64 + 1) as usize; // number 0 .. i
+                debug_assert!(j <= i);
+                indices[i] = indices[j];
+                indices[j] = i;
+            }
+
+            let mut subset = Vec::with_capacity(count);
+            for index in indices.into_iter().take(count) {
+                subset.push(IndexedValidatorDescription {
+                    desc: self.list[index].clone(),
+                    validator_idx: index as u16,
+                });
+            }
+            subset
+        };
+
+        let hash_short =
+            Self::compute_subset_hash_short(subset.iter().map(AsRef::as_ref), cc_seqno);
+        Some((subset, hash_short))
+    }
+
     /// Compoutes a validator subset short hash.
-    pub fn compute_subset_hash_short(subset: &[ValidatorDescription], cc_seqno: u32) -> u32 {
+    pub fn compute_subset_hash_short<'a, I>(subset: I, cc_seqno: u32) -> u32
+    where
+        I: IntoIterator<Item = &'a ValidatorDescription, IntoIter: ExactSizeIterator>,
+    {
         const HASH_SHORT_MAGIC: u32 = 0x901660ED;
+
+        let subset = subset.into_iter();
 
         let mut hash = crc32c::crc32c(&HASH_SHORT_MAGIC.to_le_bytes());
         hash = crc32c::crc32c_append(hash, &cc_seqno.to_le_bytes());
@@ -1519,6 +1572,46 @@ impl<'a> Load<'a> for ValidatorDescription {
             },
             prev_total_weight: 0,
         })
+    }
+}
+
+/// Validator description with its original index in vset.
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct IndexedValidatorDescription {
+    /// Validator description.
+    pub desc: ValidatorDescription,
+    /// Index in the original validator set.
+    pub validator_idx: u16,
+}
+
+impl AsRef<ValidatorDescription> for IndexedValidatorDescription {
+    #[inline]
+    fn as_ref(&self) -> &ValidatorDescription {
+        &self.desc
+    }
+}
+
+impl AsMut<ValidatorDescription> for IndexedValidatorDescription {
+    #[inline]
+    fn as_mut(&mut self) -> &mut ValidatorDescription {
+        &mut self.desc
+    }
+}
+
+impl std::ops::Deref for IndexedValidatorDescription {
+    type Target = ValidatorDescription;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.desc
+    }
+}
+
+impl std::ops::DerefMut for IndexedValidatorDescription {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.desc
     }
 }
 
