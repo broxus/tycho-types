@@ -405,11 +405,18 @@ pub struct BlockSignature {
 /// Signature verification utils.
 pub trait BlockSignatureExt {
     /// Verifies signatures for the specified data and the provided list of nodes.
-    fn check_signatures(&self, list: &[ValidatorDescription], data: &[u8]) -> Result<u64, Error>;
+    fn check_signatures<'a, I>(&self, list: I, data: &[u8]) -> Result<u64, Error>
+    where
+        I: IntoIterator<Item = &'a ValidatorDescription, IntoIter: ExactSizeIterator>;
 }
 
 impl BlockSignatureExt for Dict<u16, BlockSignature> {
-    fn check_signatures(&self, list: &[ValidatorDescription], data: &[u8]) -> Result<u64, Error> {
+    fn check_signatures<'a, I>(&self, list: I, data: &[u8]) -> Result<u64, Error>
+    where
+        I: IntoIterator<Item = &'a ValidatorDescription, IntoIter: ExactSizeIterator>,
+    {
+        let list = list.into_iter();
+
         // Collect nodes by short id
         let mut unique_nodes =
             ahash::HashMap::<[u8; 32], &ValidatorDescription>::with_capacity_and_hasher(
