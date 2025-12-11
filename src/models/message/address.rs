@@ -342,7 +342,7 @@ impl<'a> arbitrary::Arbitrary<'a> for IntAddr {
 }
 
 /// Standard internal address.
-#[derive(Debug, Default, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct StdAddr {
     /// Optional anycast info.
     pub anycast: Option<Box<Anycast>>,
@@ -363,6 +363,11 @@ impl StdAddr {
 
     /// The maximum number of bits that address with anycast occupies.
     pub const BITS_MAX: u16 = Self::BITS_WITHOUT_ANYCAST + Anycast::BITS_MAX;
+
+    /// Address with all values set as zero (e.g. `0:000...000`).
+    ///
+    /// Same as `StdAddr::default()`.
+    pub const ZERO: Self = Self::new(0, HashBytes::ZERO);
 
     /// Constructs a new standard address without anycast info.
     #[inline]
@@ -430,6 +435,11 @@ impl StdAddr {
         self.workchain as i32 == ShardIdent::MASTERCHAIN.workchain()
     }
 
+    /// Returns `true` if this address is `0:000...000`.
+    pub const fn is_zero(&self) -> bool {
+        self.workchain == 0 && self.anycast.is_none() && self.address.is_zero()
+    }
+
     /// Returns the number of data bits that this struct occupies.
     pub const fn bit_len(&self) -> u16 {
         let mut bit_len = Self::BITS_WITHOUT_ANYCAST;
@@ -468,6 +478,13 @@ impl StdAddr {
                 bounceable,
             },
         }
+    }
+}
+
+impl Default for StdAddr {
+    #[inline]
+    fn default() -> Self {
+        Self::ZERO
     }
 }
 

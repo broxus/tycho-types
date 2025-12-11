@@ -690,6 +690,18 @@ impl HashBytes {
         }
     }
 
+    /// Returns `true` if all bytes are zero.
+    pub const fn is_zero(&self) -> bool {
+        let mut i = 0;
+        while i < 32 {
+            if self.0[i] != 0 {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
     #[inline(always)]
     fn fmt_hex(&self, f: &mut std::fmt::Formatter<'_>, table: &[u8; 16]) -> std::fmt::Result {
         let mut output = [0u8; 64];

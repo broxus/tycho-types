@@ -144,7 +144,7 @@ impl AbiValue {
                 }
             }
             Self::AddressStd(value) => {
-                let bit_len = match value.as_ref() {
+                let bit_len = match value {
                     Some(addr) => addr.bit_len(),
                     None => 2,
                 };
@@ -391,7 +391,7 @@ impl AbiSerializer {
             AbiValue::Bool(value) => self.write_bool(*value),
             AbiValue::Cell(value) => self.write_cell(value),
             AbiValue::Address(value) => self.write_address(value),
-            AbiValue::AddressStd(value) => self.write_address_std(value),
+            AbiValue::AddressStd(value) => self.write_address_std(value.as_deref()),
             AbiValue::Bytes(value) => self.write_bytes(value, c),
             AbiValue::FixedBytes(value) => self.write_fixed_bytes(value, abi_version, c),
             AbiValue::String(value) => self.write_bytes(value.as_bytes(), c),
@@ -476,7 +476,7 @@ impl AbiSerializer {
         address.store_into(target, Cell::empty_context())
     }
 
-    fn write_address_std(&mut self, address: &Option<StdAddr>) -> Result<(), Error> {
+    fn write_address_std(&mut self, address: Option<&StdAddr>) -> Result<(), Error> {
         let target = self.require_builder(Size {
             bits: if self.version.use_max_size() {
                 StdAddr::BITS_MAX

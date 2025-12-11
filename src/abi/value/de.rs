@@ -200,12 +200,11 @@ impl AbiValue {
             }
             AbiType::AddressStd => {
                 ok!(preload_bits(1, slice));
-                let address_opt = match AnyAddr::load_from(slice)? {
+                Ok(Self::AddressStd(match AnyAddr::load_from(slice)? {
                     AnyAddr::None => None,
-                    AnyAddr::Std(addr) => Some(addr),
+                    AnyAddr::Std(addr) => Some(Box::new(addr)),
                     _ => anyhow::bail!("Expected StdAddr or None"),
-                };
-                Ok(Self::AddressStd(Box::new(address_opt)))
+                }))
             }
             AbiType::Bytes => load_bytes(version, last, slice).map(Self::Bytes),
             AbiType::FixedBytes(len) => {

@@ -139,7 +139,7 @@ pub enum AbiValue {
     Address(Box<AnyAddr>),
     /// Standard internal address ([`StdAddr`])
     /// [`StdAddr`]: crate::models::message::StdAddr
-    AddressStd(Box<Option<StdAddr>>),
+    AddressStd(Option<Box<StdAddr>>),
     /// Byte array.
     Bytes(Bytes),
     /// Byte array of fixed length.
@@ -209,6 +209,7 @@ impl AbiValue {
             (Self::Bool(_), AbiType::Bool)
             | (Self::Cell(_), AbiType::Cell)
             | (Self::Address(_), AbiType::Address)
+            | (Self::AddressStd(_), AbiType::AddressStd)
             | (Self::Bytes(_), AbiType::Bytes)
             | (Self::String(_), AbiType::String)
             | (Self::Token(_), AbiType::Token) => true,
@@ -294,6 +295,16 @@ impl AbiValue {
         AnyAddr: From<T>,
     {
         Self::Address(Box::new(AnyAddr::from(value)))
+    }
+
+    /// Simple `address_std` constructor.
+    #[inline]
+    pub fn address_std<T>(value: T) -> Self
+    where
+        StdAddr: From<T>,
+    {
+        // TODO: Use `castaway` to specialize on `Box<StdAddr>`.
+        Self::AddressStd(Some(Box::new(StdAddr::from(value))))
     }
 
     /// Simple `bytes` constructor.
@@ -416,7 +427,7 @@ impl AbiType {
             AbiType::Bool => AbiValue::Bool(false),
             AbiType::Cell => AbiValue::Cell(Cell::empty_cell()),
             AbiType::Address => AbiValue::Address(Box::default()),
-            AbiType::AddressStd => AbiValue::AddressStd(Box::default()),
+            AbiType::AddressStd => AbiValue::AddressStd(None),
             AbiType::Bytes => AbiValue::Bytes(Bytes::default()),
             AbiType::FixedBytes(len) => AbiValue::FixedBytes(Bytes::from(vec![0u8; *len])),
             AbiType::String => AbiValue::String(String::default()),
@@ -451,6 +462,7 @@ impl PartialEq for WithoutName<AbiValue> {
             (AbiValue::Bool(a), AbiValue::Bool(b)) => a.eq(b),
             (AbiValue::Cell(a), AbiValue::Cell(b)) => a.eq(b),
             (AbiValue::Address(a), AbiValue::Address(b)) => a.eq(b),
+            (AbiValue::AddressStd(a), AbiValue::AddressStd(b)) => a.eq(b),
             (AbiValue::Bytes(a), AbiValue::Bytes(b)) => a.eq(b),
             (AbiValue::FixedBytes(a), AbiValue::FixedBytes(b)) => a.eq(b),
             (AbiValue::String(a), AbiValue::String(b)) => a.eq(b),

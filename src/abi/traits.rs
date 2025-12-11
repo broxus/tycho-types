@@ -1075,8 +1075,14 @@ impl FromAbi for IntAddr {
             match address.as_ref() {
                 AnyAddr::Std(addr) => return Ok(IntAddr::Std(addr.clone())),
                 AnyAddr::Var(addr) => return Ok(IntAddr::Var(addr.clone())),
-                AnyAddr::None | AnyAddr::Ext(_) => (),
+                AnyAddr::None => return Ok(IntAddr::Std(StdAddr::ZERO)),
+                AnyAddr::Ext(_) => {}
             }
+        } else if let AbiValue::AddressStd(address) = &value {
+            return Ok(match address.as_ref() {
+                Some(addr) => IntAddr::Std(addr.as_ref().clone()),
+                None => IntAddr::Std(StdAddr::ZERO),
+            });
         }
         Err(expected_type("int address", &value))
     }
@@ -1093,10 +1099,17 @@ impl FromPlainAbi for IntAddr {
 
 impl FromAbi for StdAddr {
     fn from_abi(value: AbiValue) -> Result<Self> {
-        if let AbiValue::Address(address) = &value
-            && let AnyAddr::Std(address) = address.as_ref()
-        {
-            return Ok(address.clone());
+        match &value {
+            AbiValue::Address(address) => match address.as_ref() {
+                AnyAddr::Std(address) => return Ok(address.clone()),
+                AnyAddr::None => return Ok(StdAddr::ZERO),
+                AnyAddr::Var(_) | AnyAddr::Ext(_) => {}
+            },
+            AbiValue::AddressStd(address) => match address {
+                Some(address) => return Ok(address.as_ref().clone()),
+                None => return Ok(StdAddr::ZERO),
+            },
+            _ => {}
         }
         Err(expected_type("std address", &value))
     }
