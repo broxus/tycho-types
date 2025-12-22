@@ -223,6 +223,14 @@ decl_global_capability! {
         ///
         /// Mask: `0x400000000`
         CapOmitMasterBlockHistory = 34,
+
+        /// Apply signature domain to verified data.
+        ///
+        /// It is a newer version of [`GlobalCapability::CapSignatureWithId`]
+        /// and has a higher priority if both are enabled at the same time.
+        ///
+        /// Mask: `0x800000000`
+        CapSignatureDomain = 35,
     }
 }
 

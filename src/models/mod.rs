@@ -1,14 +1,15 @@
 //! Blockchain models.
 
-pub use account::*;
-pub use block::*;
-pub use config::*;
-pub use currency::*;
-pub use global_version::*;
-pub use message::*;
-pub use shard::*;
-pub use transaction::*;
-pub use vm::*;
+pub use self::account::*;
+pub use self::block::*;
+pub use self::config::*;
+pub use self::currency::*;
+pub use self::global_version::*;
+pub use self::message::*;
+pub use self::shard::*;
+pub use self::signature_domain::*;
+pub use self::transaction::*;
+pub use self::vm::*;
 
 pub mod account;
 pub mod block;
@@ -17,6 +18,7 @@ pub mod currency;
 pub mod global_version;
 pub mod message;
 pub mod shard;
+pub mod signature_domain;
 pub mod transaction;
 pub mod vm;
 
