@@ -13,7 +13,7 @@ pub use self::cell_context::{CellContext, CellParts, LoadMode};
 pub use self::cell_impl::rc::{Cell, CellInner, WeakCell};
 #[cfg(feature = "sync")]
 pub use self::cell_impl::sync::{Cell, CellInner, WeakCell};
-pub use self::cell_impl::{SafeDeleter, StaticCell, VirtualCellWrapper};
+pub use self::cell_impl::{AbsentCell, SafeDeleter, StaticCell, VirtualCellWrapper};
 pub use self::lazy::{Lazy, LazyExotic};
 pub use self::slice::{
     CellSlice, CellSliceParts, CellSliceRange, DisplayCellSliceData, ExactSize, Load, LoadCell,
@@ -1077,19 +1077,6 @@ impl CellType {
         }
     }
 
-    /// Decodes any cell type from byte.
-    #[inline]
-    pub const fn from_byte(byte: u8) -> Option<Self> {
-        Some(match byte {
-            0xff => CellType::Ordinary,
-            1 => CellType::PrunedBranch,
-            2 => CellType::LibraryReference,
-            3 => CellType::MerkleProof,
-            4 => CellType::MerkleUpdate,
-            _ => return None,
-        })
-    }
-
     /// Decodes exotic cell type from byte.
     #[inline]
     pub const fn from_byte_exotic(byte: u8) -> Option<Self> {
@@ -1148,6 +1135,8 @@ impl CellDescriptor {
     pub const IS_EXOTIC_MASK: u8 = 0b0000_1000;
     /// Bit mask to store the `store_hashes` flag in the descriptor.
     pub const STORE_HASHES_MASK: u8 = 0b0001_0000;
+    /// Constant mask for "absent" cells.
+    pub const ABSENT_MASK: u8 = Self::STORE_HASHES_MASK | Self::REF_COUNT_MASK;
     /// _de Brujn_ level presence mask in the descriptor.
     pub const LEVEL_MASK: u8 = 0b1110_0000;
 
@@ -1248,7 +1237,7 @@ impl CellDescriptor {
     /// Returns whether this cell refers to some external data.
     #[inline(always)]
     pub const fn is_absent(self) -> bool {
-        self.d1 == (Self::REF_COUNT_MASK | Self::IS_EXOTIC_MASK)
+        self.d1 & !Self::LEVEL_MASK == Self::ABSENT_MASK
     }
 
     /// Returns whether this cell should store hashes in data.

@@ -399,6 +399,95 @@ impl<const N: usize> CellImpl for PrunedBranch<N> {
     }
 }
 
+/// A cell that is missing from a tree.
+///
+/// Somewhat similar to pruned cell, but doesn't affect hashes
+/// of parent cells and panics on data access.
+///
+/// Can only be constructed either via [`AbsentCell::new`] or
+/// via BOC deserialization.
+///
+/// [`CellBuilder`]: crate::cell::CellBuilder
+pub struct AbsentCell {
+    d1: u8,
+    hashes: Box<[(HashBytes, u16)]>,
+}
+
+impl AbsentCell {
+    /// Creates `Self` from the provided cell.
+    ///
+    /// Creating [`AbsentCell`] from an [`AbsentCell`] gives the same cell.
+    pub fn new<T: AsRef<DynCell>>(cell: T) -> Cell {
+        let cell = cell.as_ref();
+        let desc = cell.descriptor();
+        // Copy only level mask bits and fill the rest with absent mask.
+        let d1 = (desc.d1 & CellDescriptor::LEVEL_MASK) | CellDescriptor::ABSENT_MASK;
+
+        let hash_count = 1 + desc.level_mask().level() as usize;
+        let mut hashes = Vec::with_capacity(hash_count);
+        for level in desc.level_mask() {
+            hashes.push((*cell.hash(level), cell.depth(level)));
+        }
+        debug_assert_eq!(hash_count, hashes.len());
+
+        Cell(CellInner::new(Self {
+            d1,
+            hashes: hashes.into_boxed_slice(),
+        }))
+    }
+}
+
+impl CellImpl for AbsentCell {
+    #[inline]
+    fn untrack(self: CellInner<Self>) -> Cell {
+        Cell(self)
+    }
+
+    fn descriptor(&self) -> CellDescriptor {
+        CellDescriptor { d1: self.d1, d2: 0 }
+    }
+
+    fn data(&self) -> &[u8] {
+        panic!("absent cell has no data")
+    }
+
+    fn bit_len(&self) -> u16 {
+        panic!("absent cell has no data (no bit_len either)")
+    }
+
+    fn reference(&self, _: u8) -> Option<&DynCell> {
+        None
+    }
+
+    fn reference_cloned(&self, _: u8) -> Option<Cell> {
+        None
+    }
+
+    fn virtualize(&self) -> &DynCell {
+        self
+    }
+
+    fn hash(&self, level: u8) -> &HashBytes {
+        let descriptor = CellDescriptor { d1: self.d1, d2: 0 };
+        let hash_index = hash_index(descriptor, level);
+        let (hash, _) = &self
+            .hashes
+            .get(hash_index as usize)
+            .expect("absent cell must be well-formed");
+        hash
+    }
+
+    fn depth(&self, level: u8) -> u16 {
+        let descriptor = CellDescriptor { d1: self.d1, d2: 0 };
+        let hash_index = hash_index(descriptor, level);
+        let (_, depth) = &self
+            .hashes
+            .get(hash_index as usize)
+            .expect("absent cell must be well-formed");
+        *depth
+    }
+}
+
 #[repr(transparent)]
 pub struct VirtualCell<T>(T);
 
@@ -634,8 +723,10 @@ impl SafeDeleter {
 
 #[cfg(test)]
 mod tests {
+    use super::AbsentCell;
     use crate::boc::Boc;
     use crate::cell::{Cell, CellBuilder, CellFamily};
+    use crate::merkle::make_pruned_branch;
 
     #[test]
     fn static_cells() {
@@ -653,5 +744,36 @@ mod tests {
         assert_eq!(cell.as_ref().repr_hash(), all_ones.repr_hash());
         assert_eq!(cell.as_ref().data(), all_ones.data());
         assert_eq!(Boc::encode(cell.as_ref()), Boc::encode(all_ones));
+    }
+
+    #[test]
+    fn absent_cell_works() {
+        let simple_cell = CellBuilder::build_from(123u32).unwrap();
+        let pruned_level1 =
+            make_pruned_branch(simple_cell.as_ref(), 0, Cell::empty_context()).unwrap();
+        let pruned_level2 =
+            make_pruned_branch(pruned_level1.as_ref(), 1, Cell::empty_context()).unwrap();
+        let pruned_level3 =
+            make_pruned_branch(pruned_level2.as_ref(), 2, Cell::empty_context()).unwrap();
+
+        for cell in [simple_cell, pruned_level1, pruned_level2, pruned_level3] {
+            let absent_direct = AbsentCell::new(&cell);
+            assert_eq!(absent_direct.level_mask(), cell.level_mask());
+            assert_eq!(absent_direct.repr_hash(), cell.repr_hash());
+            assert_eq!(absent_direct.repr_depth(), cell.repr_depth());
+
+            for level in cell.level_mask() {
+                assert_eq!(absent_direct.hash(level), cell.hash(level));
+                assert_eq!(absent_direct.depth(level), cell.depth(level));
+            }
+
+            let absent_indirect = AbsentCell::new(&absent_direct);
+            assert_eq!(
+                absent_indirect.descriptor().level_mask(),
+                absent_indirect.descriptor().level_mask()
+            );
+            assert_eq!(absent_direct.repr_hash(), absent_indirect.repr_hash());
+            assert_eq!(absent_direct.repr_depth(), absent_indirect.repr_depth());
+        }
     }
 }
