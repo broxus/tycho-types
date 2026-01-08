@@ -147,18 +147,32 @@ impl MerkleUpdate {
     /// Tries to apply this Merkle update to the specified cell,
     /// producing a new cell and using an empty cell context.
     pub fn apply(&self, old: &Cell) -> Result<Cell, Error> {
-        self.apply_ext(old, Cell::empty_context())
+        self.apply_ext_with_stats(old, Cell::empty_context())
+            .map(|r| r.cell)
     }
 
     /// Tries to apply this Merkle update to the specified cell,
-    /// producing a new cell and using an empty cell context.
-    pub fn apply_ext(&self, old: &Cell, context: &dyn CellContext) -> Result<Cell, Error> {
+    /// producing a new cell with stats and using an empty cell context.
+    pub fn apply_with_stats(&self, old: &Cell) -> Result<ApplyResult, Error> {
+        self.apply_ext_with_stats(old, Cell::empty_context())
+    }
+
+    /// Tries to apply this Merkle update to the specified cell,
+    /// producing a new cell with stats and using an empty cell context.
+    pub fn apply_ext_with_stats(
+        &self,
+        old: &Cell,
+        context: &dyn CellContext,
+    ) -> Result<ApplyResult, Error> {
         if old.as_ref().repr_hash() != &self.old_hash {
             return Err(Error::InvalidData);
         }
 
         if self.old_hash == self.new_hash {
-            return Ok(old.clone());
+            return Ok(ApplyResult {
+                cell: old.clone(),
+                stats: MerkleApplyStats::default(),
+            });
         }
 
         struct Applier<'a> {
@@ -263,15 +277,22 @@ impl MerkleUpdate {
         };
 
         // Apply changed cells
-        let new = Applier {
+        let mut applier = Applier {
             old_cells,
             new_cells: Default::default(),
             context,
-        }
-        .run(self.new.as_ref(), 0)?;
+        };
+
+        let new = applier.run(self.new.as_ref(), 0)?;
 
         if new.as_ref().repr_hash() == &self.new_hash {
-            Ok(new)
+            // Note: +1 for root
+            let new_cells_count = applier.new_cells.len() + 1;
+
+            Ok(ApplyResult {
+                cell: new,
+                stats: MerkleApplyStats { new_cells_count },
+            })
         } else {
             Err(Error::InvalidData)
         }
@@ -284,23 +305,37 @@ impl MerkleUpdate {
         old: &Cell,
         old_split_at: &ahash::HashSet<HashBytes>,
     ) -> Result<Cell, Error> {
-        self.par_apply_ext(old, old_split_at, Cell::empty_context())
+        self.par_apply_ext_with_stats(old, old_split_at, Cell::empty_context())
+            .map(|r| r.cell)
     }
 
-    /// Tries to apply Merkle update in parallel
+    /// Tries to apply Merkle update in parallel with stats
     #[cfg(all(feature = "rayon", feature = "sync"))]
-    pub fn par_apply_ext(
+    pub fn par_apply_with_stats(
+        &self,
+        old: &Cell,
+        old_split_at: &ahash::HashSet<HashBytes>,
+    ) -> Result<ApplyResult, Error> {
+        self.par_apply_ext_with_stats(old, old_split_at, Cell::empty_context())
+    }
+
+    /// Tries to apply Merkle update in parallel with collecting stats
+    #[cfg(all(feature = "rayon", feature = "sync"))]
+    pub fn par_apply_ext_with_stats(
         &self,
         old: &Cell,
         old_split_at: &ahash::HashSet<HashBytes>,
         context: &(dyn CellContext + Send + Sync),
-    ) -> Result<Cell, Error> {
+    ) -> Result<ApplyResult, Error> {
         if old.as_ref().repr_hash() != &self.old_hash {
             return Err(Error::InvalidData);
         }
 
         if self.old_hash == self.new_hash {
-            return Ok(old.clone());
+            return Ok(ApplyResult {
+                cell: old.clone(),
+                stats: MerkleApplyStats::default(),
+            });
         }
 
         struct Applier<'a> {
@@ -512,7 +547,7 @@ impl MerkleUpdate {
         };
 
         // Apply changed cells
-        let new = {
+        let (new, new_cells_count) = {
             let applier = Applier {
                 old_cells,
                 new_cells: Default::default(),
@@ -520,11 +555,19 @@ impl MerkleUpdate {
             };
 
             let new = rayon::scope(|scope| applier.run(self.new.as_ref(), 0, 0, Some(scope)))?;
-            new.resolve(context)?
+            let cell = new.resolve(context)?;
+
+            // Note: +1 for root
+            let count = applier.new_cells.len() + 1;
+
+            (cell, count)
         };
 
         if new.as_ref().repr_hash() == &self.new_hash {
-            Ok(new)
+            Ok(ApplyResult {
+                cell: new,
+                stats: MerkleApplyStats { new_cells_count },
+            })
         } else {
             Err(Error::InvalidData)
         }
@@ -900,6 +943,22 @@ impl MerkleUpdate {
             Ok(old_cells.into_iter().collect())
         }
     }
+}
+
+/// Metadata collected during Merkle update.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MerkleApplyStats {
+    /// Number of new (not pruned) cells created.
+    pub new_cells_count: usize,
+}
+
+/// Result of applying a Merkle update with metadata.
+#[derive(Debug, Clone)]
+pub struct ApplyResult {
+    /// The new cell.
+    pub cell: Cell,
+    /// Metadata.
+    pub stats: MerkleApplyStats,
 }
 
 /// Helper struct to build a Merkle update.
@@ -1687,5 +1746,122 @@ mod tests {
             });
             batch.is_empty()
         }
+    }
+
+    /// Helper function to count new cells by traversing.
+    fn count_new_cells(merkle_update: &MerkleUpdate) -> usize {
+        if merkle_update.old_hash == merkle_update.new_hash {
+            return 0;
+        }
+
+        let mut visited = ahash::HashSet::default();
+        let mut count = 0;
+        let mut stack = vec![merkle_update.new.as_ref()];
+
+        while let Some(cell) = stack.pop() {
+            let hash = cell.repr_hash();
+
+            // Skip already visited cells
+            if !visited.insert(hash) {
+                continue;
+            }
+
+            // Count only non-pruned cells
+            if !cell.descriptor().is_pruned_branch() {
+                count += 1;
+
+                // Add children only for non-pruned cells
+                for child in cell.references() {
+                    stack.push(child);
+                }
+            }
+        }
+
+        count
+    }
+
+    #[test]
+    fn test_count_new_cells() {
+        // Create dict with keys 0..20
+        let mut dict = Dict::<u32, u32>::new();
+        for i in 0..20 {
+            dict.add(i, i * 10).unwrap();
+        }
+
+        // Serialize old dict
+        let old_dict_cell = CellBuilder::build_from(&dict).unwrap();
+        let old_dict_hashes = visit_all_cells(&old_dict_cell);
+
+        // Modify dict
+        dict.set(0, 1).unwrap();
+        dict.set(5, 999).unwrap();
+        dict.set(10, 9999).unwrap();
+        dict.set(15, 99999).unwrap();
+        let new_dict_cell = CellBuilder::build_from(dict).unwrap();
+
+        assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
+
+        // Create merkle update
+        let merkle_update = MerkleUpdate::create(
+            old_dict_cell.as_ref(),
+            new_dict_cell.as_ref(),
+            old_dict_hashes,
+        )
+        .build()
+        .unwrap();
+
+        // Count new cells via traversal
+        let count_via_traversal = count_new_cells(&merkle_update);
+
+        // Count new cells via apply
+        let result = merkle_update.apply_with_stats(&old_dict_cell).unwrap();
+
+        assert_eq!(result.cell.as_ref(), new_dict_cell.as_ref());
+        assert_eq!(count_via_traversal, result.stats.new_cells_count,);
+    }
+
+    #[test]
+    #[cfg(all(feature = "rayon", feature = "sync"))]
+    fn test_par_apply_new_cells_count() {
+        // Create dict with keys 0..20
+        let mut dict = Dict::<u32, u32>::new();
+        for i in 0..20 {
+            dict.add(i, i * 10).unwrap();
+        }
+
+        // Serialize old dict
+        let old_dict_cell = CellBuilder::build_from(&dict).unwrap();
+        let old_dict_hashes = visit_all_cells(&old_dict_cell);
+
+        // Modify dict
+        // Modify dict
+        dict.set(0, 1).unwrap();
+        dict.set(5, 999).unwrap();
+        dict.set(10, 9999).unwrap();
+        dict.set(15, 99999).unwrap();
+        let new_dict_cell = CellBuilder::build_from(dict).unwrap();
+
+        assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
+
+        // Create merkle update
+        let merkle_update = MerkleUpdate::create(
+            old_dict_cell.as_ref(),
+            new_dict_cell.as_ref(),
+            old_dict_hashes,
+        )
+        .build()
+        .unwrap();
+
+        // Count via traversal
+        let count_via_traversal = count_new_cells(&merkle_update);
+
+        // Count via par_apply
+        let split_at = ahash::HashSet::default();
+        let result = merkle_update
+            .par_apply_with_stats(&old_dict_cell, &split_at)
+            .unwrap();
+
+        assert_eq!(result.cell.as_ref(), new_dict_cell.as_ref());
+        assert_eq!(count_via_traversal, result.stats.new_cells_count,);
     }
 }
