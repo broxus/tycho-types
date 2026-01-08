@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.88"
 include = ["src/**/*.rs", "benches/**/*.rs", "LICENSE-*", "README.md"]
 license = "MIT OR Apache-2.0"
+build = "build.rs"
 
 [[bench]]
 name = "boc"
@@ -78,13 +79,15 @@ base64 = { version = "0.22", optional = true }
 bitflags = "2.3"
 blake3 = { version = "1.5", optional = true }
 bytes = { version = "1.4", optional = true }
+cfg-if = "1.0"
 crc32c = "0.6.8"
 dashmap = { version = "6.1.0", optional = true }
 ed25519-dalek = { version = "2.1.1", optional = true }
-tycho-crypto = { version = "0.4", features = ["tl-proto"], optional = true }
+getrandom = { version = "0.3" }
 hex = "0.4"
 num-bigint = { version = "0.4", optional = true }
 num-traits = { version = "0.2", optional = true }
+once_cell = "1.21"
 rand8 = { package = "rand", version = "0.8", optional = true }
 rand9 = { package = "rand", version = "0.9", optional = true }
 rayon = { version = "1.10", optional = true }
@@ -94,7 +97,9 @@ sha2 = "0.10"
 smallvec = { version = "1.9", features = ["union"] }
 thiserror = "2.0"
 tl-proto = { version = "0.5.3", optional = true }
+tycho-crypto = { version = "0.4", features = ["tl-proto"], optional = true }
 typeid = "1.0"
+zerocopy = { version = "0.8", default-features = false, features = ["simd"] }
 
 tycho-types-proc = { version = "=0.3.0", path = "proc" }
 tycho-types-abi-proc = { version = "=0.3.0", path = "abi-proc", optional = true }

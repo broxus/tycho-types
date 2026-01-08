@@ -1,26 +1,16 @@
 use std::collections::HashMap;
-use std::hash::BuildHasher;
 
 use super::BocTag;
-use crate::cell::{CellDescriptor, DynCell, HashBytes};
+use crate::cell::{BuildCellHasher, CellDescriptor, DynCell, HashBytesKey};
 
 /// Preallocated BOC header indices cache.
-pub struct BocHeaderCache<S> {
-    rev_indices: HashMap<&'static HashBytes, u32, S>,
+#[derive(Default)]
+pub struct BocHeaderCache {
+    rev_indices: CellIndicesMap<'static>,
     rev_cells: Vec<&'static DynCell>,
 }
 
-impl<S: BuildHasher + Default> Default for BocHeaderCache<S> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            rev_indices: Default::default(),
-            rev_cells: Default::default(),
-        }
-    }
-}
-
-impl<S: BuildHasher + Default> BocHeaderCache<S> {
+impl BocHeaderCache {
     /// Creates an empty preallocated revs cache of specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -40,10 +30,12 @@ impl<S: BuildHasher + Default> BocHeaderCache<S> {
     }
 }
 
+type CellIndicesMap<'a> = HashMap<&'a HashBytesKey, u32, BuildCellHasher>;
+
 /// Intermediate BOC serializer state.
-pub struct BocHeader<'a, S = ahash::RandomState> {
+pub struct BocHeader<'a> {
     root_rev_indices: Vec<u32>,
-    rev_indices: HashMap<&'a HashBytes, u32, S>,
+    rev_indices: CellIndicesMap<'a>,
     rev_cells: Vec<&'a DynCell>,
     total_data_size: u64,
     reference_count: u64,
@@ -52,7 +44,7 @@ pub struct BocHeader<'a, S = ahash::RandomState> {
     include_crc: bool,
 }
 
-impl<S: BuildHasher + Default> Default for BocHeader<'_, S> {
+impl Default for BocHeader<'_> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -68,10 +60,7 @@ impl<S: BuildHasher + Default> Default for BocHeader<'_, S> {
     }
 }
 
-impl<'a, S> BocHeader<'a, S>
-where
-    S: BuildHasher + Default,
-{
+impl<'a> BocHeader<'a> {
     /// Creates an intermediate BOC serializer state with a single root.
     pub fn with_root(root: &'a DynCell) -> Self {
         let mut res = Self::default();
@@ -85,7 +74,7 @@ where
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             root_rev_indices: Default::default(),
-            rev_indices: HashMap::with_capacity_and_hasher(capacity, S::default()),
+            rev_indices: HashMap::with_capacity_and_hasher(capacity, Default::default()),
             rev_cells: Vec::with_capacity(capacity),
             total_data_size: 0,
             reference_count: 0,
@@ -102,25 +91,19 @@ where
         res.add_root(root);
         res
     }
-}
 
-impl<'a, S> BocHeader<'a, S>
-where
-    S: BuildHasher,
-{
     /// Creates an intermediate BOC serializer state with a single root and preallocated revs cache.
-    pub fn with_root_and_cache(root: &'a DynCell, cache: BocHeaderCache<S>) -> Self {
+    pub fn with_root_and_cache(root: &'a DynCell, cache: BocHeaderCache) -> Self {
         debug_assert!(cache.rev_cells.is_empty());
         debug_assert!(cache.rev_indices.is_empty());
 
-        let mut res = BocHeader::<'_, S> {
+        let mut res = BocHeader::<'_> {
             // SAFETY: `rev_indices` is guaranteed to be empty so that
             // there is no difference in a key type lifetime.
             rev_indices: unsafe {
-                std::mem::transmute::<
-                    HashMap<&'static HashBytes, u32, S>,
-                    HashMap<&'a HashBytes, u32, S>,
-                >(cache.rev_indices)
+                std::mem::transmute::<CellIndicesMap<'static>, CellIndicesMap<'a>>(
+                    cache.rev_indices,
+                )
             },
             // SAFETY: `rev_cells` is guaranteed to be empty so that
             // there is no difference in a value type lifetime.
@@ -140,7 +123,7 @@ where
     }
 
     /// Transforms BocHeader into reusable revs cache.
-    pub fn into_cache(mut self) -> BocHeaderCache<S> {
+    pub fn into_cache(mut self) -> BocHeaderCache {
         self.rev_indices.clear();
         self.rev_cells.clear();
 
@@ -148,10 +131,7 @@ where
             // SAFETY: `rev_indices` is guaranteed to be empty so that
             // there is no difference in a key type lifetime.
             rev_indices: unsafe {
-                std::mem::transmute::<
-                    HashMap<&'a HashBytes, u32, S>,
-                    HashMap<&'static HashBytes, u32, S>,
-                >(self.rev_indices)
+                std::mem::transmute::<CellIndicesMap<'a>, CellIndicesMap<'static>>(self.rev_indices)
             },
             // SAFETY: `rev_cells` is guaranteed to be empty so that
             // there is no difference in a value type lifetime.
@@ -252,10 +232,7 @@ where
     /// Encodes cell trees into bytes.
     /// Uses `rayon` under the hood.
     #[cfg(feature = "rayon")]
-    pub fn encode_rayon(&self, target: &mut Vec<u8>)
-    where
-        S: Send + Sync,
-    {
+    pub fn encode_rayon(&self, target: &mut Vec<u8>) {
         use rayon::iter::{IndexedParallelIterator, ParallelIterator};
         use rayon::slice::ParallelSlice;
 
@@ -378,7 +355,7 @@ where
             }
             target.extend_from_slice(cell.data());
             for child in cell.references() {
-                if let Some(rev_index) = self.rev_indices.get(child.repr_hash()) {
+                if let Some(rev_index) = self.rev_indices.get(child.repr_hash().as_key()) {
                     let rev_index = self.cell_count - *rev_index - 1;
                     target.extend_from_slice(&rev_index.to_be_bytes()[4 - ref_size..]);
                 } else {
@@ -402,7 +379,7 @@ where
     fn fill(&mut self, root: &'a DynCell) -> u32 {
         const SAFE_DEPTH: u16 = 128;
 
-        if let Some(index) = self.rev_indices.get(root.repr_hash()) {
+        if let Some(index) = self.rev_indices.get(root.repr_hash().as_key()) {
             return *index;
         }
 
@@ -419,12 +396,13 @@ where
 
     fn fill_recursive(&mut self, cell: &'a DynCell) {
         for child in cell.references() {
-            if !self.rev_indices.contains_key(child.repr_hash()) {
+            if !self.rev_indices.contains_key(child.repr_hash().as_key()) {
                 self.fill_recursive(child);
             }
         }
 
-        self.rev_indices.insert(cell.repr_hash(), self.cell_count);
+        self.rev_indices
+            .insert(cell.repr_hash().as_key(), self.cell_count);
         self.rev_cells.push(cell);
 
         let descriptor = cell.descriptor();
@@ -442,13 +420,14 @@ where
 
         while let Some(children) = stack.last_mut() {
             if let Some(cell) = children.next() {
-                if !self.rev_indices.contains_key(cell.repr_hash()) {
+                if !self.rev_indices.contains_key(cell.repr_hash().as_key()) {
                     stack.push(cell.references());
                 }
             } else {
                 let cell = children.cell();
 
-                self.rev_indices.insert(cell.repr_hash(), self.cell_count);
+                self.rev_indices
+                    .insert(cell.repr_hash().as_key(), self.cell_count);
                 self.rev_cells.push(cell);
 
                 let descriptor = cell.descriptor();

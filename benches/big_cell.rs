@@ -7,7 +7,7 @@ use tycho_types::boc::ser::BocHeaderCache;
 use tycho_types::cell::{Cell, CellBuilder};
 
 thread_local! {
-    static CACHE: RefCell<BocHeaderCache<ahash::RandomState>> = {
+    static CACHE: RefCell<BocHeaderCache> = {
         RefCell::new(BocHeaderCache::with_capacity(300000))
     };
 }

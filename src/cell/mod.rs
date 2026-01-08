@@ -14,6 +14,9 @@ pub use self::cell_impl::rc::{Cell, CellInner, WeakCell};
 #[cfg(feature = "sync")]
 pub use self::cell_impl::sync::{Cell, CellInner, WeakCell};
 pub use self::cell_impl::{SafeDeleter, StaticCell, VirtualCellWrapper};
+pub use self::hasher::{
+    BuildCellHasher, BuildTrustedCellHasher, CellHasher, HashBytesKey, TrustedCellHasher,
+};
 pub use self::lazy::{Lazy, LazyExotic};
 pub use self::slice::{
     CellSlice, CellSliceParts, CellSliceRange, DisplayCellSliceData, ExactSize, Load, LoadCell,
@@ -37,6 +40,7 @@ mod builder;
 /// Lazy-loaded cell data.
 mod lazy;
 
+mod hasher;
 mod usage_tree;
 
 #[cfg(feature = "sync")]
@@ -653,6 +657,12 @@ impl HashBytes {
     pub const fn wrap(value: &[u8; 32]) -> &Self {
         // SAFETY: HashBytes is #[repr(transparent)]
         unsafe { &*(value as *const [u8; 32] as *const Self) }
+    }
+
+    /// Converts into a hashmap key.
+    #[inline]
+    pub const fn as_key(&self) -> &HashBytesKey {
+        HashBytesKey::wrap(&self.0)
     }
 
     /// Returns a slice containing the entire array.
