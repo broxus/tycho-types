@@ -55,6 +55,6 @@ fn new_zerostate() {
     let block = block.parse::<Block>().unwrap();
     let state_update = block.state_update.load().unwrap();
 
-    let new_state = state_update.apply(&zerostate).unwrap();
+    let new_state = state_update.apply::<BuildCellHasher>(&zerostate).unwrap();
     check_master_state(new_state);
 }

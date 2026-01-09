@@ -4,9 +4,10 @@
 
 pub use crate::boc::{Boc, BocRepr};
 pub use crate::cell::{
-    Cell, CellBuilder, CellContext, CellDataBuilder, CellFamily, CellImpl, CellSlice,
-    CellSliceParts, CellSliceRange, CellType, DynCell, EquivalentRepr, ExactSize, HashBytes, Load,
-    LoadCell, Size, Store, UsageTree, UsageTreeMode, WeakCell,
+    BuildCellHasher, BuildTrustedCellHasher, Cell, CellBuilder, CellContext, CellDataBuilder,
+    CellDescriptor, CellFamily, CellHasher, CellImpl, CellSlice, CellSliceParts, CellSliceRange,
+    CellType, DynCell, EquivalentRepr, ExactSize, HashBytes, HashBytesKey, Load, LoadCell, Size,
+    Store, TrustedCellHasher, UsageTree, UsageTreeMode, WeakCell,
 };
 pub use crate::dict::{AugDict, Dict, DictKey, LoadDictKey, RawDict, StoreDictKey};
 #[cfg(feature = "bigint")]

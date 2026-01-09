@@ -22,6 +22,20 @@ impl HashBytesKey {
     }
 }
 
+impl std::fmt::Display for HashBytesKey {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(crate::cell::HashBytes::wrap(&self.0), f)
+    }
+}
+
+impl std::fmt::Debug for HashBytesKey {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(crate::cell::HashBytes::wrap(&self.0), f)
+    }
+}
+
 impl Hash for HashBytesKey {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {

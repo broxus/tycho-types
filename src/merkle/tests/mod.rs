@@ -20,7 +20,7 @@ fn test_proof() {
     let root = Boc::decode(include_bytes!("simple_proof.boc")).unwrap();
     let target_hash = root.as_ref().reference(1).unwrap().repr_hash();
 
-    let merkle_proof = MerkleProof::create_for_cell(root.as_ref(), target_hash)
+    let merkle_proof = MerkleProof::create_for_cell::<BuildCellHasher>(root.as_ref(), target_hash)
         .build()
         .unwrap();
 
@@ -42,7 +42,9 @@ fn create_proof_for_deep_cell() {
         cell = builder.build().unwrap();
     }
 
-    let stats = cell.compute_unique_stats(1 << 22).unwrap();
+    let stats = cell
+        .compute_unique_stats::<BuildCellHasher>(1 << 22)
+        .unwrap();
     assert_eq!(stats, CellTreeStats {
         bit_count: 65000 * 32,
         cell_count: 65001
@@ -54,7 +56,7 @@ fn create_proof_for_deep_cell() {
         assert_eq!(decoded.as_ref(), cell.as_ref());
     }
 
-    let cell = MerkleProof::create_for_cell(cell.as_ref(), EMPTY_CELL_HASH)
+    let cell = MerkleProof::create_for_cell::<BuildCellHasher>(cell.as_ref(), EMPTY_CELL_HASH)
         .build()
         .unwrap();
 
@@ -85,7 +87,7 @@ fn create_proof_for_dict() {
     tracked_dict.get(9).unwrap().unwrap();
 
     // Create proof from the usage tree
-    let merkle_proof = MerkleProof::create(tracked_cell.as_ref(), usage_tree)
+    let merkle_proof = MerkleProof::create::<_, BuildCellHasher>(tracked_cell.as_ref(), usage_tree)
         .build()
         .unwrap();
 
@@ -132,7 +134,8 @@ fn proof_with_subtree() -> anyhow::Result<()> {
         assert!(usage_tree.add_subtree(dict.as_ref()));
     }
 
-    let proof = MerkleProof::create(root_cell.as_ref(), usage_tree).build()?;
+    let proof =
+        MerkleProof::create::<_, BuildCellHasher>(root_cell.as_ref(), usage_tree).build()?;
     let mut virtual_cell = proof.cell.as_ref().virtualize().as_slice()?;
 
     assert_eq!(virtual_cell.load_u128(), Ok(321321));
@@ -197,15 +200,19 @@ fn test_merkle_update() {
     }
 
     // Create the Merkle update using HashSet
-    let merkle_update = MerkleUpdate::create(old_tree.as_ref(), new_tree.as_ref(), old_cells)
-        .build()
-        .unwrap();
-
-    // Create the Merkle update using UsageTree
-    let merkle_update_with_usage_tree =
-        MerkleUpdate::create(old_tree.as_ref(), new_tree.as_ref(), usage_tree)
+    let merkle_update =
+        MerkleUpdate::create::<_, BuildCellHasher>(old_tree.as_ref(), new_tree.as_ref(), old_cells)
             .build()
             .unwrap();
+
+    // Create the Merkle update using UsageTree
+    let merkle_update_with_usage_tree = MerkleUpdate::create::<_, BuildCellHasher>(
+        old_tree.as_ref(),
+        new_tree.as_ref(),
+        usage_tree,
+    )
+    .build()
+    .unwrap();
 
     // Print sizes
     println!(
@@ -240,8 +247,10 @@ fn test_merkle_update() {
     );
 
     // Apply the Merkle updates to the old tree
-    let result_hashset = merkle_update.apply(&old_tree).unwrap();
-    let result_usage_tree = merkle_update_with_usage_tree.apply(&old_tree).unwrap();
+    let result_hashset = merkle_update.apply::<BuildCellHasher>(&old_tree).unwrap();
+    let result_usage_tree = merkle_update_with_usage_tree
+        .apply::<BuildCellHasher>(&old_tree)
+        .unwrap();
 
     // Verify that the results match the new tree
     assert_eq!(result_hashset.as_ref(), new_tree.as_ref());

@@ -1,5 +1,10 @@
+use std::collections::HashSet;
+use std::hash::BuildHasher;
+
 use super::cell_impl::VirtualCellWrapper;
-use super::{Cell, CellDescriptor, CellImpl, CellInner, DynCell, HashBytes};
+use super::{
+    BuildCellHasher, Cell, CellDescriptor, CellImpl, CellInner, DynCell, HashBytes, HashBytesKey,
+};
 
 /// Rule for including cells in the usage tree.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -11,8 +16,8 @@ pub enum UsageTreeMode {
 }
 
 /// Usage tree for a family of cells.
-pub struct UsageTree {
-    state: SharedState,
+pub struct UsageTree<S: BuildHasher = BuildCellHasher> {
+    state: SharedState<S>,
 }
 
 impl UsageTree {
@@ -66,9 +71,9 @@ impl UsageTree {
 }
 
 /// Usage tree for a family of cells with subtrees.
-pub struct UsageTreeWithSubtrees {
-    state: SharedState,
-    subtrees: ahash::HashSet<HashBytes>,
+pub struct UsageTreeWithSubtrees<S: BuildHasher = BuildCellHasher> {
+    state: SharedState<S>,
+    subtrees: HashSet<HashBytesKey, S>,
 }
 
 impl UsageTreeWithSubtrees {
@@ -90,13 +95,13 @@ impl UsageTreeWithSubtrees {
     /// Returns `true` if the subtree root with the specified representation hash
     /// is present in this usage tree.
     pub fn contains_subtree(&self, repr_hash: &HashBytes) -> bool {
-        self.subtrees.contains(repr_hash)
+        self.subtrees.contains(repr_hash.as_key())
     }
 
     /// Adds a subtree to the usage tree.
     /// Returns whether the value was newly inserted.
     pub fn add_subtree(&mut self, root: &DynCell) -> bool {
-        self.subtrees.insert(*root.repr_hash())
+        self.subtrees.insert(*root.repr_hash().as_key())
     }
 }
 
@@ -105,7 +110,7 @@ use self::rc::{SharedState, UsageCell, UsageTreeState};
 #[cfg(feature = "sync")]
 use self::sync::{SharedState, UsageCell, UsageTreeState};
 
-impl CellImpl for UsageCell {
+impl<S: BuildHasher + 'static> CellImpl for UsageCell<S> {
     #[inline]
     fn untrack(self: CellInner<Self>) -> Cell {
         UsageCell::untrack_impl(self)
@@ -172,50 +177,63 @@ impl CellImpl for UsageCell {
 
 #[cfg(not(feature = "sync"))]
 mod rc {
+    use std::collections::HashSet;
+    use std::hash::BuildHasher;
     use std::rc::{Rc, Weak};
 
     use super::UsageTreeMode;
-    use crate::cell::{Cell, DynCell, HashBytes};
+    use crate::cell::{BuildCellHasher, Cell, DynCell, HashBytes, HashBytesKey};
 
-    pub type SharedState = Rc<UsageTreeState>;
+    pub type SharedState<S> = Rc<UsageTreeState<S>>;
 
-    type VisitedCells = std::cell::RefCell<ahash::HashSet<HashBytes>>;
+    type VisitedCells<S> = std::cell::RefCell<HashSet<HashBytesKey, S>>;
 
-    pub struct UsageTreeState {
+    pub struct UsageTreeState<S: BuildHasher = BuildCellHasher> {
         pub mode: UsageTreeMode,
-        pub visited: VisitedCells,
+        pub visited: VisitedCells<S>,
     }
 
-    impl UsageTreeState {
-        pub fn new(mode: UsageTreeMode) -> SharedState {
+    impl<S: BuildHasher> UsageTreeState<S> {
+        pub fn new(mode: UsageTreeMode) -> SharedState<S>
+        where
+            S: Default,
+        {
             Rc::new(Self {
                 mode,
                 visited: Default::default(),
             })
         }
 
-        pub fn with_mode_and_capacity(mode: UsageTreeMode, capacity: usize) -> SharedState {
+        pub fn with_mode_and_capacity(mode: UsageTreeMode, capacity: usize) -> SharedState<S>
+        where
+            S: Default,
+        {
             Rc::new(Self {
                 mode,
-                visited: std::cell::RefCell::new(ahash::HashSet::with_capacity_and_hasher(
+                visited: std::cell::RefCell::new(HashSet::with_capacity_and_hasher(
                     capacity,
                     Default::default(),
                 )),
             })
         }
 
-        pub fn wrap(self: &SharedState, cell: Cell) -> Cell {
-            Cell::from(Rc::new(UsageCell::new(cell, Rc::downgrade(self), self.mode)) as Rc<DynCell>)
+        pub fn wrap(self: &SharedState<S>, cell: Cell) -> Cell
+        where
+            S: 'static,
+        {
+            Cell::from(
+                Rc::new(UsageCell::<S>::new(cell, Rc::downgrade(self), self.mode)) as Rc<DynCell>,
+            )
         }
 
         #[inline]
         pub fn insert(&self, cell: &Cell) {
-            self.visited.borrow_mut().insert(*cell.repr_hash());
+            self.visited.borrow_mut().insert(*cell.repr_hash().as_key());
         }
 
         #[inline]
         pub fn contains(&self, repr_hash: &HashBytes) -> bool {
-            self.visited.borrow().contains(repr_hash)
+            self.visited.borrow().contains(repr_hash.as_key())
         }
 
         #[inline]
@@ -229,17 +247,17 @@ mod rc {
         }
     }
 
-    pub struct UsageCell {
+    pub struct UsageCell<S: BuildHasher = BuildCellHasher> {
         pub cell: Cell,
-        pub usage_tree: Weak<UsageTreeState>,
+        pub usage_tree: Weak<UsageTreeState<S>>,
         pub children: std::cell::UnsafeCell<[Option<Rc<Self>>; 4]>,
         pub inserted: std::cell::Cell<bool>,
         pub orphaned: std::cell::Cell<bool>,
         pub mode: UsageTreeMode,
     }
 
-    impl UsageCell {
-        pub fn new(cell: Cell, usage_tree: Weak<UsageTreeState>, mode: UsageTreeMode) -> Self {
+    impl<S: BuildHasher> UsageCell<S> {
+        pub fn new(cell: Cell, usage_tree: Weak<UsageTreeState<S>>, mode: UsageTreeMode) -> Self {
             Self {
                 cell,
                 usage_tree,
@@ -306,50 +324,61 @@ mod rc {
 #[cfg(feature = "sync")]
 mod sync {
     use std::cell::UnsafeCell;
+    use std::hash::BuildHasher;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Once, Weak};
 
     use super::UsageTreeMode;
-    use crate::cell::{Cell, DynCell, HashBytes};
+    use crate::cell::{BuildCellHasher, Cell, DynCell, HashBytes, HashBytesKey};
 
-    pub type SharedState = Arc<UsageTreeState>;
+    pub type SharedState<S> = Arc<UsageTreeState<S>>;
 
-    type VisitedCells = scc::HashSet<HashBytes, ahash::RandomState>;
+    type VisitedCells<S> = scc::HashSet<HashBytesKey, S>;
 
-    pub struct UsageTreeState {
+    pub struct UsageTreeState<S: BuildHasher> {
         pub mode: UsageTreeMode,
-        pub visited: VisitedCells,
+        pub visited: VisitedCells<S>,
     }
 
-    impl UsageTreeState {
-        pub fn new(mode: UsageTreeMode) -> SharedState {
+    impl<S: BuildHasher> UsageTreeState<S> {
+        pub fn new(mode: UsageTreeMode) -> SharedState<S>
+        where
+            S: Default,
+        {
             Arc::new(Self {
                 mode,
                 visited: Default::default(),
             })
         }
 
-        pub fn with_mode_and_capacity(mode: UsageTreeMode, capacity: usize) -> SharedState {
+        pub fn with_mode_and_capacity(mode: UsageTreeMode, capacity: usize) -> SharedState<S>
+        where
+            S: Default,
+        {
             Arc::new(Self {
                 mode,
                 visited: VisitedCells::with_capacity_and_hasher(capacity, Default::default()),
             })
         }
 
-        pub fn wrap(self: &SharedState, cell: Cell) -> Cell {
+        pub fn wrap(self: &SharedState<S>, cell: Cell) -> Cell
+        where
+            S: 'static,
+        {
             Cell::from(
-                Arc::new(UsageCell::new(cell, Arc::downgrade(self), self.mode)) as Arc<DynCell>,
+                Arc::new(UsageCell::<S>::new(cell, Arc::downgrade(self), self.mode))
+                    as Arc<DynCell>,
             )
         }
 
         #[inline]
         pub fn insert(&self, cell: &Cell) {
-            _ = self.visited.insert(*cell.repr_hash());
+            _ = self.visited.insert(*cell.repr_hash().as_key());
         }
 
         #[inline]
         pub fn contains(&self, repr_hash: &HashBytes) -> bool {
-            self.visited.contains(repr_hash)
+            self.visited.contains(repr_hash.as_key())
         }
 
         #[inline]
@@ -363,9 +392,9 @@ mod sync {
         }
     }
 
-    pub struct UsageCell {
+    pub struct UsageCell<S: BuildHasher = BuildCellHasher> {
         pub cell: Cell,
-        pub usage_tree: Weak<UsageTreeState>,
+        pub usage_tree: Weak<UsageTreeState<S>>,
         // TODO: Compress into one futex with bitset.
         pub reference_states: [Once; 4],
         pub reference_data: [UnsafeCell<Option<Arc<Self>>>; 4],
@@ -374,8 +403,8 @@ mod sync {
         pub mode: UsageTreeMode,
     }
 
-    impl UsageCell {
-        pub fn new(cell: Cell, usage_tree: Weak<UsageTreeState>, mode: UsageTreeMode) -> Self {
+    impl<S: BuildHasher> UsageCell<S> {
+        pub fn new(cell: Cell, usage_tree: Weak<UsageTreeState<S>>, mode: UsageTreeMode) -> Self {
             Self {
                 // NOTE: Untrack loaded cell to prevent its `UsageTree`s from stacking.
                 cell: Cell::untrack(cell),
@@ -456,6 +485,6 @@ mod sync {
     }
 
     // SAFETY: `UnsafeCell` data is controlled by the `Once` state.
-    unsafe impl Send for UsageCell {}
-    unsafe impl Sync for UsageCell {}
+    unsafe impl<S: BuildHasher> Send for UsageCell<S> {}
+    unsafe impl<S: BuildHasher> Sync for UsageCell<S> {}
 }

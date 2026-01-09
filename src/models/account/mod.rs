@@ -39,7 +39,7 @@ impl StorageUsed {
             storage.build_ext(cx)?
         };
 
-        let Some(res) = cell.compute_unique_stats(cell_limit) else {
+        let Some(res) = cell.compute_unique_stats::<BuildCellHasher>(cell_limit) else {
             return Err(Error::Cancelled);
         };
 

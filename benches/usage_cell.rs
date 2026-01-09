@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -45,13 +46,13 @@ fn traverse_cell_storage_cell_with_capacity(c: &mut Criterion) {
 
 #[derive(Default)]
 struct Visitor<'a> {
-    visited: ahash::HashSet<&'a HashBytes>,
+    visited: HashSet<&'a HashBytesKey, BuildCellHasher>,
     stack: Vec<RefsIter<'a>>,
 }
 
 impl<'a> Visitor<'a> {
     fn add_cell(&mut self, cell: &'a DynCell) -> bool {
-        if !self.visited.insert(cell.repr_hash()) {
+        if !self.visited.insert(cell.repr_hash().as_key()) {
             return true;
         }
 
@@ -63,7 +64,7 @@ impl<'a> Visitor<'a> {
     fn reduce_stack(&mut self) -> bool {
         'outer: while let Some(item) = self.stack.last_mut() {
             for cell in item.by_ref() {
-                if !self.visited.insert(cell.repr_hash()) {
+                if !self.visited.insert(cell.repr_hash().as_key()) {
                     continue;
                 }
 

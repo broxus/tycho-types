@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
+use std::marker::PhantomData;
 #[cfg(all(feature = "rayon", feature = "sync"))]
 use std::sync::Arc;
 
@@ -137,7 +140,11 @@ impl MerkleUpdate {
 
     /// Starts building a Merkle update between the specified cells,
     /// using old cells determined by filter.
-    pub fn create<'a, F>(old: &'a DynCell, new: &'a DynCell, f: F) -> MerkleUpdateBuilder<'a, F>
+    pub fn create<'a, F, S>(
+        old: &'a DynCell,
+        new: &'a DynCell,
+        f: F,
+    ) -> MerkleUpdateBuilder<'a, F, S>
     where
         F: MerkleFilter + 'a,
     {
@@ -146,13 +153,19 @@ impl MerkleUpdate {
 
     /// Tries to apply this Merkle update to the specified cell,
     /// producing a new cell and using an empty cell context.
-    pub fn apply(&self, old: &Cell) -> Result<Cell, Error> {
-        self.apply_ext(old, Cell::empty_context())
+    pub fn apply<S>(&self, old: &Cell) -> Result<Cell, Error>
+    where
+        S: BuildHasher + Default,
+    {
+        self.apply_ext::<S>(old, Cell::empty_context())
     }
 
     /// Tries to apply this Merkle update to the specified cell,
     /// producing a new cell and using an empty cell context.
-    pub fn apply_ext(&self, old: &Cell, context: &dyn CellContext) -> Result<Cell, Error> {
+    pub fn apply_ext<S>(&self, old: &Cell, context: &dyn CellContext) -> Result<Cell, Error>
+    where
+        S: BuildHasher + Default,
+    {
         if old.as_ref().repr_hash() != &self.old_hash {
             return Err(Error::InvalidData);
         }
@@ -161,13 +174,13 @@ impl MerkleUpdate {
             return Ok(old.clone());
         }
 
-        struct Applier<'a> {
-            old_cells: ahash::HashMap<HashBytes, Cell>,
-            new_cells: ahash::HashMap<HashBytes, Cell>,
+        struct Applier<'a, S> {
+            old_cells: HashMap<HashBytesKey, Cell, S>,
+            new_cells: HashMap<HashBytesKey, Cell, S>,
             context: &'a dyn CellContext,
         }
 
-        impl Applier<'_> {
+        impl<S: BuildHasher> Applier<'_, S> {
             fn run(&mut self, cell: &DynCell, merkle_depth: u8) -> Result<Cell, Error> {
                 let descriptor = cell.descriptor();
                 let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
@@ -186,7 +199,7 @@ impl MerkleUpdate {
                         if mask.to_byte() & (1 << child_merkle_depth) != 0 {
                             // Use original hash for pruned branches
                             let child_hash = child.as_ref().hash(mask.level() - 1);
-                            match self.old_cells.get(child_hash) {
+                            match self.old_cells.get(child_hash.as_key()) {
                                 Some(cell) => cell.clone(),
                                 None => return Err(Error::InvalidData),
                             }
@@ -196,11 +209,11 @@ impl MerkleUpdate {
                     } else {
                         // Build a child cell if it hasn't been built before
                         let child_hash = child.as_ref().hash(child_merkle_depth);
-                        if let Some(child) = self.new_cells.get(child_hash) {
+                        if let Some(child) = self.new_cells.get(child_hash.as_key()) {
                             child.clone()
                         } else {
                             let child = ok!(self.run(child.as_ref(), child_merkle_depth));
-                            self.new_cells.insert(*child_hash, child.clone());
+                            self.new_cells.insert(*child_hash.as_key(), child.clone());
                             child
                         }
                     };
@@ -217,34 +230,34 @@ impl MerkleUpdate {
         // Collect old cells
         let old_cells = {
             // Collect and check old cells tree
-            let old_cell_hashes = ok!(self.find_old_cells());
+            let old_cell_hashes = ok!(self.find_old_cells::<S>());
 
-            let mut visited = ahash::HashSet::default();
-            let mut old_cells = ahash::HashMap::default();
+            let mut visited = HashSet::<HashBytesKey, S>::default();
+            let mut old_cells = HashMap::<HashBytesKey, _, S>::default();
 
             // Insert root
             let mut merkle_depth = 0u8;
 
-            visited.insert(old.repr_hash());
-            old_cells.insert(*old.hash(merkle_depth), old.clone());
+            visited.insert(*old.repr_hash().as_key());
+            old_cells.insert(*old.hash(merkle_depth).as_key(), old.clone());
             merkle_depth += old.descriptor().is_merkle() as u8;
             let mut stack = vec![old.references()];
 
             'outer: while let Some(iter) = stack.last_mut() {
                 let cloned = iter.clone().cloned();
                 for (child_ref, child) in std::iter::zip(&mut *iter, cloned) {
-                    if !visited.insert(child_ref.repr_hash()) {
+                    if !visited.insert(*child_ref.repr_hash().as_key()) {
                         continue;
                     }
 
                     let hash = child_ref.hash(merkle_depth);
-                    if !old_cell_hashes.contains(hash) {
+                    if !old_cell_hashes.contains(hash.as_key()) {
                         // Skip new cells
                         continue;
                     }
 
                     // Store an owned cell with original merkle depth
-                    old_cells.insert(*hash, child);
+                    old_cells.insert(*hash.as_key(), child);
 
                     // Increase the current merkle depth if needed
                     merkle_depth += child_ref.descriptor().is_merkle() as u8;
@@ -279,22 +292,28 @@ impl MerkleUpdate {
 
     /// Tries to apply Merkle update in parallel
     #[cfg(all(feature = "rayon", feature = "sync"))]
-    pub fn par_apply(
+    pub fn par_apply<S>(
         &self,
         old: &Cell,
-        old_split_at: &ahash::HashSet<HashBytes>,
-    ) -> Result<Cell, Error> {
+        old_split_at: &HashSet<HashBytesKey, S>,
+    ) -> Result<Cell, Error>
+    where
+        S: BuildHasher + Default + Clone + Send + Sync,
+    {
         self.par_apply_ext(old, old_split_at, Cell::empty_context())
     }
 
     /// Tries to apply Merkle update in parallel
     #[cfg(all(feature = "rayon", feature = "sync"))]
-    pub fn par_apply_ext(
+    pub fn par_apply_ext<S>(
         &self,
         old: &Cell,
-        old_split_at: &ahash::HashSet<HashBytes>,
+        old_split_at: &HashSet<HashBytesKey, S>,
         context: &(dyn CellContext + Send + Sync),
-    ) -> Result<Cell, Error> {
+    ) -> Result<Cell, Error>
+    where
+        S: BuildHasher + Default + Clone + Send + Sync,
+    {
         if old.as_ref().repr_hash() != &self.old_hash {
             return Err(Error::InvalidData);
         }
@@ -303,13 +322,13 @@ impl MerkleUpdate {
             return Ok(old.clone());
         }
 
-        struct Applier<'a> {
-            old_cells: dashmap::DashMap<&'a HashBytes, Cell, ahash::RandomState>,
-            new_cells: dashmap::DashMap<HashBytes, ExtCell, ahash::RandomState>,
+        struct Applier<'a, S> {
+            old_cells: dashmap::DashMap<&'a HashBytesKey, Cell, S>,
+            new_cells: dashmap::DashMap<HashBytesKey, ExtCell, S>,
             context: &'a (dyn CellContext + Send + Sync),
         }
 
-        impl Applier<'_> {
+        impl<S: BuildHasher + Default + Clone + Send + Sync> Applier<'_, S> {
             // TODO: Replace with a non-recursive impl
             fn run<'scope>(
                 &'scope self,
@@ -370,7 +389,7 @@ impl MerkleUpdate {
                 if mask.to_byte() & (1 << merkle_depth) != 0 {
                     // Use original hash for pruned branches
                     let child_hash = cell.as_ref().hash(mask.level() - 1);
-                    match self.old_cells.get(child_hash) {
+                    match self.old_cells.get(child_hash.as_key()) {
                         Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
                         None => Err(Error::InvalidData),
                     }
@@ -389,7 +408,7 @@ impl MerkleUpdate {
             ) -> Result<ExtCell, Error> {
                 let hash = cell.as_ref().hash(merkle_depth);
 
-                if let Some(child) = self.new_cells.get(hash) {
+                if let Some(child) = self.new_cells.get(hash.as_key()) {
                     return Ok(child.clone());
                 }
 
@@ -410,30 +429,32 @@ impl MerkleUpdate {
                 }
 
                 let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
-                self.new_cells.insert(*hash, cell.clone());
+                self.new_cells.insert(*hash.as_key(), cell.clone());
                 Ok(cell)
             }
         }
 
         // Finds original old cell roots by their hashes.
         #[allow(clippy::too_many_arguments)]
-        fn find_old_subtrees<'a, 's>(
+        fn find_old_subtrees<'a, 's, S>(
             cell_ref: &'a DynCell,
             cell: Cell,
             mut merkle_depth: u8,
             scope: Option<&rayon::Scope<'s>>,
-            split_at: &'s ahash::HashSet<HashBytes>,
-            visited: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
-            old_cells: &'s dashmap::DashMap<&'a HashBytes, Cell, ahash::RandomState>,
-            old_cell_hashes: &'s ahash::HashSet<&'a HashBytes>,
-        ) {
+            split_at: &'s HashSet<HashBytesKey, S>,
+            visited: &'s dashmap::DashSet<&'a HashBytesKey, S>,
+            old_cells: &'s dashmap::DashMap<&'a HashBytesKey, Cell, S>,
+            old_cell_hashes: &'s HashSet<&'a HashBytesKey, S>,
+        ) where
+            S: BuildHasher + Default + Clone + Send + Sync,
+        {
             let original_merkle_depth = merkle_depth;
 
             // Insert root
-            if !visited.insert(cell_ref.repr_hash()) {
+            if !visited.insert(cell_ref.repr_hash().as_key()) {
                 return;
             }
-            old_cells.insert(cell_ref.hash(merkle_depth), cell);
+            old_cells.insert(cell_ref.hash(merkle_depth).as_key(), cell);
             merkle_depth += cell_ref.descriptor().is_merkle() as u8;
 
             let mut stack = vec![cell_ref.references()];
@@ -441,7 +462,7 @@ impl MerkleUpdate {
                 let cloned = iter.clone().cloned();
                 for (cell_ref, cell) in std::iter::zip(&mut *iter, cloned) {
                     if let Some(scope) = scope
-                        && split_at.contains(cell.repr_hash())
+                        && split_at.contains(cell.repr_hash().as_key())
                     {
                         scope.spawn(move |_| {
                             find_old_subtrees(
@@ -458,18 +479,18 @@ impl MerkleUpdate {
                         continue;
                     }
 
-                    if !visited.insert(cell_ref.repr_hash()) {
+                    if !visited.insert(cell_ref.repr_hash().as_key()) {
                         continue;
                     }
 
                     let hash = cell_ref.hash(merkle_depth);
-                    if !old_cell_hashes.contains(hash) {
+                    if !old_cell_hashes.contains(hash.as_key()) {
                         // Skip new cells
                         continue;
                     }
 
                     // Store an owned cell with original merkle depth
-                    old_cells.insert(hash, cell);
+                    old_cells.insert(hash.as_key(), cell);
 
                     // Increase the current merkle depth if needed
                     merkle_depth += cell_ref.descriptor().is_merkle() as u8;
@@ -531,10 +552,13 @@ impl MerkleUpdate {
     }
 
     /// Computes the removed cells diff using the original cell.
-    pub fn compute_removed_cells<'a>(
+    pub fn compute_removed_cells<'a, S>(
         &self,
         old: &'a DynCell,
-    ) -> Result<ahash::HashMap<&'a HashBytes, u32>, Error> {
+    ) -> Result<HashMap<&'a HashBytesKey, u32, S>, Error>
+    where
+        S: BuildHasher + Default,
+    {
         use std::collections::hash_map;
 
         if old.repr_hash() != &self.old_hash || self.old.hash(0) != old.repr_hash() {
@@ -546,26 +570,26 @@ impl MerkleUpdate {
             return Ok(Default::default());
         }
 
-        let mut new_cells = ahash::HashSet::default();
+        let mut new_cells = HashSet::<&HashBytesKey, S>::default();
 
         // Compute a list of all hashes in the `new` merkle update tree
         {
             // TODO: check if `new_cells` set can be used instead of `visited`
-            let mut visited = ahash::HashSet::default();
+            let mut visited = HashSet::<&HashBytesKey, S>::default();
             let mut merkle_depth = self.new.descriptor().is_merkle() as u8;
             let mut stack = vec![self.new.references()];
 
-            visited.insert(self.new.repr_hash());
-            new_cells.insert(self.new.hash(0));
+            visited.insert(self.new.repr_hash().as_key());
+            new_cells.insert(self.new.hash(0).as_key());
 
             'outer: while let Some(iter) = stack.last_mut() {
                 for child in &mut *iter {
-                    if !visited.insert(child.repr_hash()) {
+                    if !visited.insert(child.repr_hash().as_key()) {
                         continue;
                     }
 
                     // Track new cells
-                    new_cells.insert(child.hash(merkle_depth));
+                    new_cells.insert(child.hash(merkle_depth).as_key());
 
                     // Unchanged cells (as pruned branches) must be presented in the old tree
                     let descriptor = child.descriptor();
@@ -588,18 +612,18 @@ impl MerkleUpdate {
         }
 
         // Traverse old cells
-        let mut result = ahash::HashMap::default();
-        result.insert(old.repr_hash(), 1);
+        let mut result = HashMap::<&HashBytesKey, u32, S>::default();
+        result.insert(old.repr_hash().as_key(), 1);
 
         let mut stack = Vec::new();
-        if !new_cells.contains(old.repr_hash()) {
+        if !new_cells.contains(old.repr_hash().as_key()) {
             stack.push(old.references());
         }
 
         'outer: while let Some(iter) = stack.last_mut() {
             for child in &mut *iter {
                 let hash = child.repr_hash();
-                match result.entry(hash) {
+                match result.entry(hash.as_key()) {
                     hash_map::Entry::Occupied(mut entry) => {
                         *entry.get_mut() += 1;
                         continue;
@@ -610,7 +634,7 @@ impl MerkleUpdate {
                 }
 
                 // Skip empty or used subtrees
-                if child.reference_count() == 0 || new_cells.contains(hash) {
+                if child.reference_count() == 0 || new_cells.contains(hash.as_key()) {
                     continue;
                 }
 
@@ -623,27 +647,27 @@ impl MerkleUpdate {
         Ok(result)
     }
 
-    fn find_old_cells(&self) -> Result<ahash::HashSet<&HashBytes>, Error> {
-        let mut visited = ahash::HashSet::default();
-        let mut old_cells = ahash::HashSet::default();
+    fn find_old_cells<S: BuildHasher + Default>(&self) -> Result<HashSet<&HashBytesKey, S>, Error> {
+        let mut visited = HashSet::<&HashBytesKey, S>::default();
+        let mut old_cells = HashSet::<&HashBytesKey, S>::default();
 
         // Traverse old cells
         let mut merkle_depth = 0u8;
 
         // Insert root
-        visited.insert(self.old.repr_hash());
-        old_cells.insert(self.old.hash(merkle_depth));
+        visited.insert(self.old.repr_hash().as_key());
+        old_cells.insert(self.old.hash(merkle_depth).as_key());
         merkle_depth += self.old.descriptor().is_merkle() as u8;
         let mut stack = vec![self.old.references()];
 
         'outer: while let Some(iter) = stack.last_mut() {
             for child in &mut *iter {
-                if !visited.insert(child.repr_hash()) {
+                if !visited.insert(child.repr_hash().as_key()) {
                     continue;
                 }
 
                 // Store cell with original merkle depth
-                old_cells.insert(child.hash(merkle_depth));
+                old_cells.insert(child.hash(merkle_depth).as_key());
 
                 // Skip children for pruned branches
                 let descriptor = child.descriptor();
@@ -670,14 +694,14 @@ impl MerkleUpdate {
 
         // Insert root
         visited.clear();
-        visited.insert(self.new.repr_hash());
+        visited.insert(self.new.repr_hash().as_key());
         stack.push(self.new.references());
         merkle_depth += self.new.descriptor().is_merkle() as u8;
 
         'outer: while let Some(iter) = stack.last_mut() {
             for child in &mut *iter {
                 // Skip visited cells
-                if !visited.insert(child.repr_hash()) {
+                if !visited.insert(child.repr_hash().as_key()) {
                     continue;
                 }
 
@@ -685,7 +709,7 @@ impl MerkleUpdate {
                 let descriptor = child.descriptor();
                 if descriptor.is_pruned_branch() {
                     if descriptor.level_mask().level() == merkle_depth + 1
-                        && !old_cells.contains(child.hash(merkle_depth))
+                        && !old_cells.contains(child.hash(merkle_depth).as_key())
                     {
                         return Err(Error::InvalidData);
                     }
@@ -711,24 +735,29 @@ impl MerkleUpdate {
     }
 
     #[cfg(all(feature = "rayon", feature = "sync"))]
-    fn par_find_old_cells<'a, 's: 'a>(
+    fn par_find_old_cells<'a, 's: 'a, S>(
         &'a self,
-        split_at: &'s ahash::HashSet<HashBytes>,
-    ) -> Result<ahash::HashSet<&'a HashBytes>, Error> {
+        split_at: &'s HashSet<HashBytesKey, S>,
+    ) -> Result<HashSet<&'a HashBytesKey, S>, Error>
+    where
+        S: BuildHasher + Default + Clone + Send + Sync,
+    {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        fn traverse_old_cells<'a, 's>(
+        fn traverse_old_cells<'a, 's, S>(
             cell: &'a DynCell,
             mut merkle_depth: u8,
             scope: Option<&rayon::Scope<'s>>,
-            split_at: &'s ahash::HashSet<HashBytes>,
-            visited: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
-            old_cells: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
-        ) {
-            if !visited.insert(cell.repr_hash()) {
+            split_at: &'s HashSet<HashBytesKey, S>,
+            visited: &'s dashmap::DashSet<&'a HashBytesKey, S>,
+            old_cells: &'s dashmap::DashSet<&'a HashBytesKey, S>,
+        ) where
+            S: BuildHasher + Default + Clone + Send + Sync,
+        {
+            if !visited.insert(cell.repr_hash().as_key()) {
                 return;
             }
-            old_cells.insert(cell.hash(merkle_depth));
+            old_cells.insert(cell.hash(merkle_depth).as_key());
 
             let original_merkle_depth = merkle_depth;
             merkle_depth += cell.descriptor().is_merkle() as u8;
@@ -739,7 +768,7 @@ impl MerkleUpdate {
                     let child_hash = child.repr_hash();
 
                     if let Some(scope) = scope
-                        && split_at.contains(child_hash)
+                        && split_at.contains(child_hash.as_key())
                     {
                         scope.spawn(move |_| {
                             traverse_old_cells(
@@ -754,12 +783,12 @@ impl MerkleUpdate {
                         continue;
                     }
 
-                    if !visited.insert(child.repr_hash()) {
+                    if !visited.insert(child.repr_hash().as_key()) {
                         continue;
                     }
 
                     // Store cell with original merkle depth
-                    old_cells.insert(child.hash(merkle_depth));
+                    old_cells.insert(child.hash(merkle_depth).as_key());
 
                     // Skip children for pruned branches
                     let descriptor = child.descriptor();
@@ -784,15 +813,17 @@ impl MerkleUpdate {
         }
 
         // TODO: Reuse stack from `traverse_old_cells`
-        fn traverse_new_cells<'a, 's>(
+        fn traverse_new_cells<'a, 's, S>(
             cell: &'a DynCell,
             mut merkle_depth: u8,
             scope: Option<&rayon::Scope<'s>>,
-            visited: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
-            old_cells: &'s dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
+            visited: &'s dashmap::DashSet<&'a HashBytesKey, S>,
+            old_cells: &'s dashmap::DashSet<&'a HashBytesKey, S>,
             is_invalid: &'s AtomicBool,
-        ) {
-            if !visited.insert(cell.repr_hash()) {
+        ) where
+            S: BuildHasher + Default + Clone + Send + Sync,
+        {
+            if !visited.insert(cell.repr_hash().as_key()) {
                 return;
             }
 
@@ -800,7 +831,7 @@ impl MerkleUpdate {
 
             let check_invalid = |descriptor: CellDescriptor, cell: &DynCell, merkle_depth: u8| {
                 descriptor.level_mask().level() == merkle_depth + 1
-                    && !old_cells.contains(cell.hash(merkle_depth))
+                    && !old_cells.contains(cell.hash(merkle_depth).as_key())
             };
 
             let descriptor = cell.descriptor();
@@ -835,7 +866,7 @@ impl MerkleUpdate {
                     }
 
                     // Skip visited cells
-                    if !visited.insert(child.repr_hash()) {
+                    if !visited.insert(child.repr_hash().as_key()) {
                         continue;
                     }
 
@@ -903,13 +934,14 @@ impl MerkleUpdate {
 }
 
 /// Helper struct to build a Merkle update.
-pub struct MerkleUpdateBuilder<'a, F> {
+pub struct MerkleUpdateBuilder<'a, F, S = BuildCellHasher> {
     old: &'a DynCell,
     new: &'a DynCell,
     filter: F,
+    _hasher: PhantomData<S>,
 }
 
-impl<'a, F> MerkleUpdateBuilder<'a, F>
+impl<'a, F, S> MerkleUpdateBuilder<'a, F, S>
 where
     F: MerkleFilter,
 {
@@ -920,37 +952,45 @@ where
             old,
             new,
             filter: f,
+            _hasher: PhantomData,
         }
     }
 
     /// Builds a Merkle update using the specified cell context.
-    pub fn build_ext(self, context: &dyn CellContext) -> Result<MerkleUpdate, Error> {
+    pub fn build_ext(self, context: &dyn CellContext) -> Result<MerkleUpdate, Error>
+    where
+        S: BuildHasher + Default,
+    {
         BuilderImpl {
             old: self.old,
             new: self.new,
             filter: &self.filter,
             context,
         }
-        .build()
+        .build::<S>()
     }
 
     /// Builds a Merkle update using an empty cell context.
-    pub fn build(self) -> Result<MerkleUpdate, Error> {
+    pub fn build(self) -> Result<MerkleUpdate, Error>
+    where
+        S: BuildHasher + Default,
+    {
         self.build_ext(Cell::empty_context())
     }
 }
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-impl<'a, F> MerkleUpdateBuilder<'a, F>
+impl<'a, F, S> MerkleUpdateBuilder<'a, F, S>
 where
     F: MerkleFilter + Send + Sync,
+    S: BuildHasher + Default + Clone + Send + Sync,
 {
     /// Multithread build of a Merkle update using the specified cell context
     /// and sets of cells which to handle in parallel.
     pub fn par_build_ext(
         self,
-        old_split_at: ahash::HashSet<HashBytes>,
-        new_split_at: ahash::HashSet<HashBytes>,
+        old_split_at: HashSet<HashBytesKey, S>,
+        new_split_at: HashSet<HashBytesKey, S>,
         context: &(dyn CellContext + Send + Sync),
     ) -> Result<MerkleUpdate, Error> {
         ParBuilderImpl {
@@ -966,8 +1006,8 @@ where
     /// and sets of cells which to handle in parallel.
     pub fn par_build(
         self,
-        old_split_at: ahash::HashSet<HashBytes>,
-        new_split_at: ahash::HashSet<HashBytes>,
+        old_split_at: HashSet<HashBytesKey, S>,
+        new_split_at: HashSet<HashBytesKey, S>,
     ) -> Result<MerkleUpdate, Error> {
         self.par_build_ext(old_split_at, new_split_at, Cell::empty_context())
     }
@@ -981,24 +1021,24 @@ struct BuilderImpl<'a, 'b, 'c: 'a> {
 }
 
 impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
-    fn build(self) -> Result<MerkleUpdate, Error> {
-        struct Resolver<'a> {
-            pruned_branches: ahash::HashSet<&'a HashBytes>,
-            visited: ahash::HashMap<&'a HashBytes, bool>,
+    fn build<S: BuildHasher + Default>(self) -> Result<MerkleUpdate, Error> {
+        struct Resolver<'a, S> {
+            pruned_branches: HashSet<&'a HashBytesKey, S>,
+            visited: HashMap<&'a HashBytesKey, bool, S>,
             filter: &'a dyn MerkleFilter,
-            changed_cells: ahash::HashSet<&'a HashBytes>,
+            changed_cells: HashSet<&'a HashBytesKey, S>,
         }
 
-        impl<'a> Resolver<'a> {
+        impl<'a, S: BuildHasher> Resolver<'a, S> {
             fn fill(&mut self, cell: &'a DynCell, mut skip_filter: bool) -> bool {
                 let repr_hash = cell.repr_hash();
 
                 // Skip visited cells
-                if let Some(&result) = self.visited.get(repr_hash) {
+                if let Some(&result) = self.visited.get(repr_hash.as_key()) {
                     return result;
                 }
 
-                let is_pruned = self.pruned_branches.contains(repr_hash);
+                let is_pruned = self.pruned_branches.contains(repr_hash.as_key());
                 let process_children = if skip_filter {
                     true
                 } else {
@@ -1019,13 +1059,13 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
                     }
 
                     if result {
-                        self.changed_cells.insert(repr_hash);
+                        self.changed_cells.insert(repr_hash.as_key());
                     }
                 }
 
                 result |= is_pruned;
 
-                self.visited.insert(repr_hash, result);
+                self.visited.insert(repr_hash.as_key(), result);
 
                 result
             }
@@ -1066,7 +1106,7 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
 
         // Create Merkle proof cell which contains only new cells
         let (new, pruned_branches) = ok! {
-            MerkleProofBuilder::<_>::new(
+            MerkleProofBuilder::<_, S>::new(
                 self.new,
                 InvertedFilter(self.filter)
             )
@@ -1086,7 +1126,7 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
 
             // Find all changed cells in the old cell tree
             if resolver.fill(self.old, false) {
-                resolver.changed_cells.insert(old_hash);
+                resolver.changed_cells.insert(old_hash.as_key());
             }
 
             resolver.changed_cells
@@ -1094,7 +1134,7 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
 
         // Create Merkle proof cell which contains only changed cells
         let old = ok! {
-            MerkleProofBuilder::<_>::new(self.old, changed_cells)
+            MerkleProofBuilder::<_, S>::new(self.old, changed_cells)
                 .allow_different_root(true)
                 .build_raw_ext(self.context)
         };
@@ -1121,11 +1161,14 @@ struct ParBuilderImpl<'a, 'b, 'c: 'a> {
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
 impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
-    fn build(
+    fn build<S>(
         self,
-        old_split_at: ahash::HashSet<HashBytes>,
-        new_split_at: ahash::HashSet<HashBytes>,
-    ) -> Result<MerkleUpdate, Error> {
+        old_split_at: HashSet<HashBytesKey, S>,
+        new_split_at: HashSet<HashBytesKey, S>,
+    ) -> Result<MerkleUpdate, Error>
+    where
+        S: BuildHasher + Default + Clone + Send + Sync,
+    {
         enum CheckResult<'a> {
             Immediate(bool),
             Parts {
@@ -1136,15 +1179,15 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
             Deferred(Promise<bool>),
         }
 
-        struct Resolver<'a> {
-            pruned_branches: dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
-            changed_cells: dashmap::DashSet<&'a HashBytes, ahash::RandomState>,
-            deferred: dashmap::DashMap<&'a HashBytes, Promise<bool>, ahash::RandomState>,
+        struct Resolver<'a, S> {
+            pruned_branches: dashmap::DashSet<&'a HashBytesKey, S>,
+            changed_cells: dashmap::DashSet<&'a HashBytesKey, S>,
+            deferred: dashmap::DashMap<&'a HashBytesKey, Promise<bool>, S>,
             filter: &'a (dyn MerkleFilter + Send + Sync),
         }
 
-        impl<'a> Resolver<'a> {
-            fn fill<'s>(&self, cell: &'a DynCell, split_at: &'s ahash::HashSet<HashBytes>) -> bool {
+        impl<'a, S: BuildHasher + Default + Clone + Send + Sync> Resolver<'a, S> {
+            fn fill<'s>(&self, cell: &'a DynCell, split_at: &'s HashSet<HashBytesKey, S>) -> bool {
                 let result = rayon::scope(|scope| {
                     SubResolver {
                         resolver: self,
@@ -1170,7 +1213,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                         }
 
                         if result {
-                            self.changed_cells.insert(hash);
+                            self.changed_cells.insert(hash.as_key());
                         }
 
                         result | is_pruned
@@ -1180,13 +1223,16 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
             }
         }
 
-        struct SubResolver<'a, 's, 'r> {
-            resolver: &'r Resolver<'a>,
-            split_at: &'s ahash::HashSet<HashBytes>,
-            visited: ahash::HashMap<&'a HashBytes, bool>,
+        struct SubResolver<'a, 's, 'r, S> {
+            resolver: &'r Resolver<'a, S>,
+            split_at: &'s HashSet<HashBytesKey, S>,
+            visited: HashMap<&'a HashBytesKey, bool, S>,
         }
 
-        impl<'a, 's, 'r> SubResolver<'a, 's, 'r> {
+        impl<'a, 's, 'r, S> SubResolver<'a, 's, 'r, S>
+        where
+            S: BuildHasher + Default + Clone + Send + Sync,
+        {
             fn fill_impl<'scope>(
                 &mut self,
                 cell: &'a DynCell,
@@ -1201,11 +1247,11 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                 let repr_hash = cell.repr_hash();
 
                 // Skip visited cells
-                if let Some(&result) = self.visited.get(repr_hash) {
+                if let Some(&result) = self.visited.get(repr_hash.as_key()) {
                     return CheckResult::Immediate(result);
                 }
 
-                let is_pruned = self.resolver.pruned_branches.contains(repr_hash);
+                let is_pruned = self.resolver.pruned_branches.contains(repr_hash.as_key());
                 let process_children = if skip_filter {
                     true
                 } else {
@@ -1220,14 +1266,14 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                 };
 
                 if !process_children {
-                    self.visited.insert(repr_hash, is_pruned);
+                    self.visited.insert(repr_hash.as_key(), is_pruned);
                     return CheckResult::Immediate(is_pruned);
                 }
 
                 if let Some(scope) = scope {
                     #[allow(clippy::collapsible_if)]
-                    if unlikely(self.split_at.contains(repr_hash)) {
-                        let entry = match self.resolver.deferred.entry(repr_hash) {
+                    if unlikely(self.split_at.contains(repr_hash.as_key())) {
+                        let entry = match self.resolver.deferred.entry(repr_hash.as_key()) {
                             dashmap::Entry::Occupied(entry) => {
                                 return CheckResult::Deferred(entry.get().clone());
                             }
@@ -1259,7 +1305,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
 
                 // Mark as visited only finished cells
                 if let CheckResult::Immediate(has_changed) = result {
-                    self.visited.insert(repr_hash, has_changed);
+                    self.visited.insert(repr_hash.as_key(), has_changed);
                 }
 
                 result
@@ -1293,7 +1339,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
                     }
 
                     if result {
-                        self.resolver.changed_cells.insert(cell_hash);
+                        self.resolver.changed_cells.insert(cell_hash.as_key());
                     }
 
                     return CheckResult::Immediate(result | is_pruned);
@@ -1346,7 +1392,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
 
         // Create Merkle proof cell which contains only new cells
         let (new, pruned_branches) = ok! {
-            MerkleProofBuilder::<_>::new(
+            MerkleProofBuilder::<_, S>::new(
                 self.new,
                 InvertedFilter(self.filter)
             )
@@ -1366,7 +1412,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
 
             // Find all changed cells in the old cell tree
             if resolver.fill(self.old, &old_split_at) {
-                resolver.changed_cells.insert(old_hash);
+                resolver.changed_cells.insert(old_hash.as_key());
             }
 
             resolver.changed_cells
@@ -1374,7 +1420,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
 
         // Create Merkle proof cell which contains only changed cells
         let old = ok! {
-            MerkleProofBuilder::<_>::new(self.old, changed_cells)
+            MerkleProofBuilder::<_, S>::new(self.old, changed_cells)
                 .allow_different_root(true)
                 .par_build_raw_ext(self.context, old_split_at)
         };
@@ -1452,7 +1498,7 @@ mod tests {
         assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
 
         // Create merkle update
-        let merkle_update = MerkleUpdate::create(
+        let merkle_update = MerkleUpdate::create::<_, BuildCellHasher>(
             old_dict_cell.as_ref(),
             new_dict_cell.as_ref(),
             old_dict_hashes,
@@ -1469,7 +1515,9 @@ mod tests {
             builder.build().unwrap();
         }
 
-        let after_apply = merkle_update.apply(&old_dict_cell).unwrap();
+        let after_apply = merkle_update
+            .apply::<BuildCellHasher>(&old_dict_cell)
+            .unwrap();
         assert_eq!(after_apply.as_ref(), new_dict_cell.as_ref());
     }
 
@@ -1500,16 +1548,21 @@ mod tests {
         assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
 
         // Create merkle update
-        let merkle_update =
-            MerkleUpdate::create(old_dict_cell.as_ref(), new_dict_cell.as_ref(), usage_tree)
-                .build()
-                .unwrap();
+        let merkle_update = MerkleUpdate::create::<_, BuildCellHasher>(
+            old_dict_cell.as_ref(),
+            new_dict_cell.as_ref(),
+            usage_tree,
+        )
+        .build()
+        .unwrap();
 
         // Test serialization
         let merkle_update_cell = CellBuilder::build_from(&merkle_update).unwrap();
         println!("BOC: {}", Boc::encode_base64(merkle_update_cell));
 
-        let after_apply = merkle_update.apply(&old_dict_cell).unwrap();
+        let after_apply = merkle_update
+            .apply::<BuildCellHasher>(&old_dict_cell)
+            .unwrap();
         assert_eq!(after_apply.as_ref(), new_dict_cell.as_ref());
     }
 
@@ -1532,7 +1585,7 @@ mod tests {
         assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
 
         // Create merkle update
-        let merkle_update = MerkleUpdate::create(
+        let merkle_update = MerkleUpdate::create::<_, BuildCellHasher>(
             old_dict_cell.as_ref(),
             new_dict_cell.as_ref(),
             old_dict_hashes,
@@ -1541,11 +1594,11 @@ mod tests {
         .unwrap();
 
         // Test diff
-        let mut refs_for_both = RefsStorage::default();
+        let mut refs_for_both = RefsStorage::<BuildCellHasher>::default();
         refs_for_both.store_cell(old_dict_cell.as_ref());
         refs_for_both.store_cell(new_dict_cell.as_ref());
 
-        let mut only_new_refs = RefsStorage::default();
+        let mut only_new_refs = RefsStorage::<BuildCellHasher>::default();
         only_new_refs.store_cell(new_dict_cell.as_ref());
 
         let diff = merkle_update
@@ -1574,7 +1627,7 @@ mod tests {
         assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
 
         // Create merkle update
-        let merkle_update = MerkleUpdate::create(
+        let merkle_update = MerkleUpdate::create::<_, BuildCellHasher>(
             old_dict_cell.as_ref(),
             new_dict_cell.as_ref(),
             old_dict_hashes,
@@ -1583,11 +1636,11 @@ mod tests {
         .unwrap();
 
         // Test diff
-        let mut refs_for_both = RefsStorage::default();
+        let mut refs_for_both = RefsStorage::<BuildCellHasher>::default();
         refs_for_both.store_cell(old_dict_cell.as_ref());
         refs_for_both.store_cell(new_dict_cell.as_ref());
 
-        let mut only_new_refs = RefsStorage::default();
+        let mut only_new_refs = RefsStorage::<BuildCellHasher>::default();
         only_new_refs.store_cell(new_dict_cell.as_ref());
 
         let diff = merkle_update
@@ -1599,21 +1652,21 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RefsStorage<'a> {
-        refs: ahash::HashMap<&'a HashBytes, u32>,
+    struct RefsStorage<'a, S> {
+        refs: HashMap<&'a HashBytesKey, u32, S>,
     }
 
-    impl<'a> RefsStorage<'a> {
+    impl<'a, S: BuildHasher> RefsStorage<'a, S> {
         fn store_cell(&mut self, root: &'a DynCell) {
             use std::collections::hash_map;
 
-            *self.refs.entry(root.repr_hash()).or_default() += 1;
+            *self.refs.entry(root.repr_hash().as_key()).or_default() += 1;
 
             let mut stack = vec![root.references()];
             'outer: while let Some(iter) = stack.last_mut() {
                 for child in iter {
                     let hash = child.repr_hash();
-                    match self.refs.entry(hash) {
+                    match self.refs.entry(hash.as_key()) {
                         hash_map::Entry::Occupied(mut entry) => {
                             *entry.get_mut() += 1;
                             continue;
@@ -1630,7 +1683,7 @@ mod tests {
             }
         }
 
-        fn remove_batch(&mut self, mut batch: ahash::HashMap<&'a HashBytes, u32>) -> bool {
+        fn remove_batch(&mut self, mut batch: HashMap<&'a HashBytesKey, u32, S>) -> bool {
             self.refs.retain(|hash, refs| {
                 if let Some(diff) = batch.remove(hash) {
                     *refs -= diff;

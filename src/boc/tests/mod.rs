@@ -22,7 +22,7 @@ fn big_cell() -> anyhow::Result<()> {
 
     let first = make_big_tree(10, &mut 0, 100000);
 
-    let mut cache = ser::BocHeaderCache::default();
+    let mut cache = ser::BocHeaderCache::<BuildCellHasher>::default();
     let bytes = Boc::encode_with_cache(first.as_ref(), &mut cache);
     let second = Boc::decode(&bytes)?;
     debug_assert_eq!(first.repr_hash(), second.repr_hash());
@@ -37,7 +37,7 @@ fn boc_with_crc() {
     let cell = Boc::decode(&boc_without_crc).unwrap();
 
     let mut boc_with_crc = Vec::new();
-    ser::BocHeader::with_root(cell.as_ref())
+    ser::BocHeader::<BuildCellHasher>::with_root(cell.as_ref())
         .with_crc(true)
         .encode(&mut boc_with_crc);
     assert_eq!(boc_without_crc.len() + 4, boc_with_crc.len());

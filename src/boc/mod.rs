@@ -1,8 +1,12 @@
 //! BOC (Bag Of Cells) implementation.
 
+use std::hash::BuildHasher;
+
 #[cfg(feature = "serde")]
 pub use self::serde::SerdeBoc;
-use crate::cell::{Cell, CellBuilder, CellContext, CellFamily, DynCell, HashBytes, Load, Store};
+use crate::cell::{
+    BuildCellHasher, Cell, CellBuilder, CellContext, CellFamily, DynCell, HashBytes, Load, Store,
+};
 
 /// BOC decoder implementation.
 pub mod de;
@@ -138,18 +142,22 @@ impl Boc {
     {
         fn encode_impl(cell: &DynCell) -> Vec<u8> {
             let mut result = Vec::new();
-            ser::BocHeader::with_root(cell).encode(&mut result);
+            ser::BocHeader::<BuildCellHasher>::with_root(cell).encode(&mut result);
             result
         }
         encode_impl(cell.as_ref())
     }
 
     /// Encodes the specified cell tree as BOC using preallocated revs cache.
-    pub fn encode_with_cache<T>(cell: T, cache: &mut ser::BocHeaderCache) -> Vec<u8>
+    pub fn encode_with_cache<T, S>(cell: T, cache: &mut ser::BocHeaderCache<S>) -> Vec<u8>
     where
         T: AsRef<DynCell>,
+        S: Default + BuildHasher,
     {
-        fn encode_impl(cell: &DynCell, cache: &mut ser::BocHeaderCache) -> Vec<u8> {
+        fn encode_impl<S: Default + BuildHasher>(
+            cell: &DynCell,
+            cache: &mut ser::BocHeaderCache<S>,
+        ) -> Vec<u8> {
             let mut result = Vec::new();
             let header = ser::BocHeader::with_root_and_cache(cell, std::mem::take(cache));
             header.encode(&mut result);
@@ -170,7 +178,7 @@ impl Boc {
     {
         fn encode_impl(cell: &DynCell) -> Vec<u8> {
             let mut result = Vec::new();
-            ser::BocHeader::with_root(cell).encode_rayon(&mut result);
+            ser::BocHeader::<BuildCellHasher>::with_root(cell).encode_rayon(&mut result);
             result
         }
         encode_impl(cell.as_ref())
@@ -184,7 +192,7 @@ impl Boc {
     {
         fn encode_pair_impl(cell1: &DynCell, cell2: &DynCell) -> Vec<u8> {
             let mut result = Vec::new();
-            let mut encoder = ser::BocHeader::with_root(cell1);
+            let mut encoder = ser::BocHeader::<BuildCellHasher>::with_root(cell1);
             encoder.add_root(cell2);
             encoder.encode(&mut result);
             result

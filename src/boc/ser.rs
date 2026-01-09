@@ -1,16 +1,26 @@
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 use super::BocTag;
 use crate::cell::{BuildCellHasher, CellDescriptor, DynCell, HashBytesKey};
 
 /// Preallocated BOC header indices cache.
-#[derive(Default)]
-pub struct BocHeaderCache {
-    rev_indices: CellIndicesMap<'static>,
+pub struct BocHeaderCache<S = BuildCellHasher> {
+    rev_indices: CellIndicesMap<'static, S>,
     rev_cells: Vec<&'static DynCell>,
 }
 
-impl BocHeaderCache {
+impl<S: BuildHasher + Default> Default for BocHeaderCache<S> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            rev_indices: Default::default(),
+            rev_cells: Default::default(),
+        }
+    }
+}
+
+impl<S: BuildHasher + Default> BocHeaderCache<S> {
     /// Creates an empty preallocated revs cache of specified capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -30,12 +40,12 @@ impl BocHeaderCache {
     }
 }
 
-type CellIndicesMap<'a> = HashMap<&'a HashBytesKey, u32, BuildCellHasher>;
+type CellIndicesMap<'a, S> = HashMap<&'a HashBytesKey, u32, S>;
 
 /// Intermediate BOC serializer state.
-pub struct BocHeader<'a> {
+pub struct BocHeader<'a, S = BuildCellHasher> {
     root_rev_indices: Vec<u32>,
-    rev_indices: CellIndicesMap<'a>,
+    rev_indices: CellIndicesMap<'a, S>,
     rev_cells: Vec<&'a DynCell>,
     total_data_size: u64,
     reference_count: u64,
@@ -44,7 +54,7 @@ pub struct BocHeader<'a> {
     include_crc: bool,
 }
 
-impl Default for BocHeader<'_> {
+impl<S: BuildHasher + Default> Default for BocHeader<'_, S> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -60,7 +70,10 @@ impl Default for BocHeader<'_> {
     }
 }
 
-impl<'a> BocHeader<'a> {
+impl<'a, S> BocHeader<'a, S>
+where
+    S: BuildHasher + Default,
+{
     /// Creates an intermediate BOC serializer state with a single root.
     pub fn with_root(root: &'a DynCell) -> Self {
         let mut res = Self::default();
@@ -91,9 +104,14 @@ impl<'a> BocHeader<'a> {
         res.add_root(root);
         res
     }
+}
 
+impl<'a, S> BocHeader<'a, S>
+where
+    S: BuildHasher,
+{
     /// Creates an intermediate BOC serializer state with a single root and preallocated revs cache.
-    pub fn with_root_and_cache(root: &'a DynCell, cache: BocHeaderCache) -> Self {
+    pub fn with_root_and_cache(root: &'a DynCell, cache: BocHeaderCache<S>) -> Self {
         debug_assert!(cache.rev_cells.is_empty());
         debug_assert!(cache.rev_indices.is_empty());
 
@@ -101,7 +119,7 @@ impl<'a> BocHeader<'a> {
             // SAFETY: `rev_indices` is guaranteed to be empty so that
             // there is no difference in a key type lifetime.
             rev_indices: unsafe {
-                std::mem::transmute::<CellIndicesMap<'static>, CellIndicesMap<'a>>(
+                std::mem::transmute::<CellIndicesMap<'static, S>, CellIndicesMap<'a, S>>(
                     cache.rev_indices,
                 )
             },
@@ -123,7 +141,7 @@ impl<'a> BocHeader<'a> {
     }
 
     /// Transforms BocHeader into reusable revs cache.
-    pub fn into_cache(mut self) -> BocHeaderCache {
+    pub fn into_cache(mut self) -> BocHeaderCache<S> {
         self.rev_indices.clear();
         self.rev_cells.clear();
 
@@ -131,7 +149,9 @@ impl<'a> BocHeader<'a> {
             // SAFETY: `rev_indices` is guaranteed to be empty so that
             // there is no difference in a key type lifetime.
             rev_indices: unsafe {
-                std::mem::transmute::<CellIndicesMap<'a>, CellIndicesMap<'static>>(self.rev_indices)
+                std::mem::transmute::<CellIndicesMap<'a, S>, CellIndicesMap<'static, S>>(
+                    self.rev_indices,
+                )
             },
             // SAFETY: `rev_cells` is guaranteed to be empty so that
             // there is no difference in a value type lifetime.
@@ -232,7 +252,10 @@ impl<'a> BocHeader<'a> {
     /// Encodes cell trees into bytes.
     /// Uses `rayon` under the hood.
     #[cfg(feature = "rayon")]
-    pub fn encode_rayon(&self, target: &mut Vec<u8>) {
+    pub fn encode_rayon(&self, target: &mut Vec<u8>)
+    where
+        S: Send + Sync,
+    {
         use rayon::iter::{IndexedParallelIterator, ParallelIterator};
         use rayon::slice::ParallelSlice;
 

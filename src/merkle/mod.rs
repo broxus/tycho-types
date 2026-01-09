@@ -6,7 +6,7 @@ use std::hash::BuildHasher;
 pub use self::proof::{MerkleProof, MerkleProofBuilder, MerkleProofExtBuilder, MerkleProofRef};
 pub use self::pruned_branch::make_pruned_branch;
 pub use self::update::{MerkleUpdate, MerkleUpdateBuilder};
-use crate::cell::{HashBytes, UsageTree, UsageTreeWithSubtrees};
+use crate::cell::{HashBytes, HashBytesKey, UsageTree, UsageTreeWithSubtrees};
 
 mod proof;
 mod pruned_branch;
@@ -93,6 +93,26 @@ impl<S: BuildHasher> MerkleFilter for HashSet<&HashBytes, S> {
     }
 }
 
+impl<S: BuildHasher> MerkleFilter for HashSet<HashBytesKey, S> {
+    fn check(&self, cell: &HashBytes) -> FilterAction {
+        if HashSet::contains(self, cell.as_key()) {
+            FilterAction::Include
+        } else {
+            FilterAction::Skip
+        }
+    }
+}
+
+impl<S: BuildHasher> MerkleFilter for HashSet<&HashBytesKey, S> {
+    fn check(&self, cell: &HashBytes) -> FilterAction {
+        if HashSet::contains(self, cell.as_key()) {
+            FilterAction::Include
+        } else {
+            FilterAction::Skip
+        }
+    }
+}
+
 #[cfg(feature = "rayon")]
 impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<&'_ HashBytes, S> {
     fn check(&self, cell: &HashBytes) -> FilterAction {
@@ -108,6 +128,28 @@ impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<&'_ HashBytes, S>
 impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<HashBytes, S> {
     fn check(&self, cell: &HashBytes) -> FilterAction {
         if dashmap::DashSet::contains(self, cell) {
+            FilterAction::Include
+        } else {
+            FilterAction::Skip
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<&'_ HashBytesKey, S> {
+    fn check(&self, cell: &HashBytes) -> FilterAction {
+        if dashmap::DashSet::contains(self, cell.as_key()) {
+            FilterAction::Include
+        } else {
+            FilterAction::Skip
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<S: BuildHasher + Clone> MerkleFilter for dashmap::DashSet<HashBytesKey, S> {
+    fn check(&self, cell: &HashBytes) -> FilterAction {
+        if dashmap::DashSet::contains(self, cell.as_key()) {
             FilterAction::Include
         } else {
             FilterAction::Skip

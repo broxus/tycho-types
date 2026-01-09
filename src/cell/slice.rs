@@ -1,3 +1,4 @@
+use std::hash::BuildHasher;
 use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -740,8 +741,11 @@ impl<'a> CellSlice<'a> {
     ///
     /// Root slice does not count as cell. A slice subrange of
     /// cells is used during computation.
-    pub fn compute_unique_stats(&self, limit: usize) -> Option<CellTreeStats> {
-        StorageStat::compute_for_slice(self, limit)
+    pub fn compute_unique_stats<S>(&self, limit: usize) -> Option<CellTreeStats>
+    where
+        S: BuildHasher + Default,
+    {
+        StorageStat::<S>::compute_for_slice(self, limit)
     }
 
     /// Tries to advance the start of data and refs windows.

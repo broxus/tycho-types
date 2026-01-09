@@ -78,7 +78,8 @@ mod test {
             let tracked = usage_tree.track(&cell);
             tracked.reference(1).unwrap().touch_recursive();
 
-            MerkleProof::create(cell.as_ref(), usage_tree).build_raw_ext(Cell::empty_context())?
+            MerkleProof::create::<_, BuildCellHasher>(cell.as_ref(), usage_tree)
+                .build_raw_ext(Cell::empty_context())?
         };
         println!("Left pruned: {}", Boc::encode_base64(&with_left_pruned));
 

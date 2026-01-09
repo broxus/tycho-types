@@ -1,5 +1,7 @@
 //! Cell tree implementation.
 
+use std::collections::HashSet;
+use std::hash::BuildHasher;
 use std::ops::{BitOr, BitOrAssign};
 use std::str::FromStr;
 
@@ -252,8 +254,11 @@ impl DynCell {
     /// Recursively computes the count of distinct cells returning
     /// the total storage used by this dag taking into account the
     /// identification of equal cells.
-    pub fn compute_unique_stats(&self, limit: usize) -> Option<CellTreeStats> {
-        StorageStat::compute_for_cell(self, limit)
+    pub fn compute_unique_stats<S>(&self, limit: usize) -> Option<CellTreeStats>
+    where
+        S: BuildHasher + Default,
+    {
+        StorageStat::<S>::compute_for_cell(self, limit)
     }
 
     /// Recursively traverses the cells tree without tracking a uniqueness
@@ -1656,14 +1661,14 @@ impl std::ops::SubAssign<Size> for CellTreeStats {
 ///
 /// NOTE: It uses hashes for deduplication, so you can only use it for
 /// fully computed and valid trees.
-pub struct StorageStat<'a> {
-    visited: ahash::HashSet<&'a HashBytes>,
+pub struct StorageStat<'a, S = BuildCellHasher> {
+    visited: HashSet<&'a HashBytesKey, S>,
     stack: Vec<RefsIter<'a>>,
     stats: CellTreeStats,
     limit: usize,
 }
 
-impl<'a> StorageStat<'a> {
+impl<'a, S: BuildHasher + Default> StorageStat<'a, S> {
     /// Recursively computes the count of distinct cells returning
     /// the total storage used by this dag taking into account the
     /// identification of equal cells.
@@ -1718,7 +1723,7 @@ impl<'a> StorageStat<'a> {
     ///
     /// Returns `false` if the limit was reached.
     pub fn add_cell(&mut self, cell: &'a DynCell) -> bool {
-        if !self.visited.insert(cell.repr_hash()) {
+        if !self.visited.insert(cell.repr_hash().as_key()) {
             return true;
         }
 
@@ -1744,7 +1749,7 @@ impl<'a> StorageStat<'a> {
     fn reduce_stack(&mut self) -> bool {
         'outer: while let Some(item) = self.stack.last_mut() {
             for cell in item.by_ref() {
-                if !self.visited.insert(cell.repr_hash()) {
+                if !self.visited.insert(cell.repr_hash().as_key()) {
                     continue;
                 }
 

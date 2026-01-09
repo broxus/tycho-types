@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
+use std::marker::PhantomData;
 #[cfg(all(feature = "rayon", feature = "sync"))]
 use std::sync::Arc;
 
@@ -185,11 +188,11 @@ impl MerkleProof {
 
     /// Starts building a Merkle proof for the specified root,
     /// using cells determined by filter.
-    pub fn create<'a, F>(root: &'a DynCell, f: F) -> MerkleProofBuilder<'a, F>
+    pub fn create<'a, F, S>(root: &'a DynCell, f: F) -> MerkleProofBuilder<'a, F, S>
     where
         F: MerkleFilter + 'a,
     {
-        MerkleProofBuilder::new(root, f)
+        MerkleProofBuilder::<_, S>::new(root, f)
     }
 
     /// Create a Merkle proof for the single cell with the specified
@@ -198,18 +201,21 @@ impl MerkleProof {
     /// Only ancestors of the first occurrence are included in the proof.
     ///
     /// Proof creation will fail if the specified child is not found.
-    pub fn create_for_cell<'a>(
+    pub fn create_for_cell<'a, S>(
         root: &'a DynCell,
         child_hash: &'a HashBytes,
-    ) -> MerkleProofBuilder<'a, impl MerkleFilter + 'a> {
-        struct RootOrChild<'a> {
-            cells: ahash::HashSet<&'a HashBytes>,
+    ) -> MerkleProofBuilder<'a, impl MerkleFilter + 'a>
+    where
+        S: BuildHasher + Default + 'static,
+    {
+        struct RootOrChild<'a, S> {
+            cells: HashSet<&'a HashBytesKey, S>,
             child_hash: &'a HashBytes,
         }
 
-        impl MerkleFilter for RootOrChild<'_> {
+        impl<S: BuildHasher> MerkleFilter for RootOrChild<'_, S> {
             fn check(&self, cell: &HashBytes) -> FilterAction {
-                if self.cells.contains(cell) || cell == self.child_hash {
+                if self.cells.contains(cell.as_key()) || cell == self.child_hash {
                     FilterAction::Include
                 } else {
                     FilterAction::Skip
@@ -228,9 +234,9 @@ impl MerkleProof {
             }
         }
 
-        let mut cells = ahash::HashSet::with_capacity_and_hasher(stack.len(), Default::default());
+        let mut cells = HashSet::<_, S>::with_capacity_and_hasher(stack.len(), Default::default());
         for item in stack {
-            cells.insert(item.cell().repr_hash());
+            cells.insert(item.cell().repr_hash().as_key());
         }
 
         MerkleProofBuilder::new(root, RootOrChild { cells, child_hash })
@@ -238,14 +244,15 @@ impl MerkleProof {
 }
 
 /// Helper struct to build a Merkle proof.
-pub struct MerkleProofBuilder<'a, F> {
+pub struct MerkleProofBuilder<'a, F, S = BuildCellHasher> {
     root: &'a DynCell,
     filter: F,
     allow_different_root: bool,
     prune_big_cells: bool,
+    _hasher: PhantomData<S>,
 }
 
-impl<'a, F> MerkleProofBuilder<'a, F>
+impl<'a, F, S> MerkleProofBuilder<'a, F, S>
 where
     F: MerkleFilter,
 {
@@ -257,6 +264,7 @@ where
             filter: f,
             allow_different_root: false,
             prune_big_cells: false,
+            _hasher: PhantomData,
         }
     }
 
@@ -275,17 +283,21 @@ where
 
     /// Extends the builder to additionally save all hashes
     /// of cells not included in Merkle proof.
-    pub fn track_pruned_branches(self) -> MerkleProofExtBuilder<'a, F> {
+    pub fn track_pruned_branches(self) -> MerkleProofExtBuilder<'a, F, S> {
         MerkleProofExtBuilder {
             root: self.root,
             filter: self.filter,
             allow_different_root: self.allow_different_root,
             prune_big_cells: self.prune_big_cells,
+            _hasher: PhantomData,
         }
     }
 
     /// Builds a Merkle proof using the specified cell context.
-    pub fn build_ext(self, context: &dyn CellContext) -> Result<MerkleProof, Error> {
+    pub fn build_ext(self, context: &dyn CellContext) -> Result<MerkleProof, Error>
+    where
+        S: BuildHasher + Default,
+    {
         let root = self.root;
         let cell = ok!(self.build_raw_ext(context));
         Ok(MerkleProof {
@@ -296,8 +308,11 @@ where
     }
 
     /// Builds a Merkle proof child cell using the specified cell context.
-    pub fn build_raw_ext(self, context: &dyn CellContext) -> Result<Cell, Error> {
-        BuilderImpl {
+    pub fn build_raw_ext(self, context: &dyn CellContext) -> Result<Cell, Error>
+    where
+        S: BuildHasher + Default,
+    {
+        BuilderImpl::<S> {
             root: self.root,
             filter: &self.filter,
             cells: Default::default(),
@@ -310,22 +325,26 @@ where
     }
 
     /// Builds a Merkle proof using an empty cell context.
-    pub fn build(self) -> Result<MerkleProof, Error> {
+    pub fn build(self) -> Result<MerkleProof, Error>
+    where
+        S: BuildHasher + Default,
+    {
         self.build_ext(Cell::empty_context())
     }
 }
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-impl<'a, F> MerkleProofBuilder<'a, F>
+impl<'a, F, S> MerkleProofBuilder<'a, F, S>
 where
     F: MerkleFilter + Send + Sync,
+    S: BuildHasher + Default + Clone + Send + Sync,
 {
     /// Multithread build of a Merkle proof using the specified cell context
     /// and a set of cells which to handle in parallel.
     pub fn par_build_ext(
         self,
         context: &(dyn CellContext + Send + Sync),
-        split_at: ahash::HashSet<HashBytes>,
+        split_at: HashSet<HashBytesKey, S>,
     ) -> Result<MerkleProof, Error> {
         let root = self.root;
         let cell = ok!(self.par_build_raw_ext(context, split_at));
@@ -341,7 +360,7 @@ where
     pub fn par_build_raw_ext(
         self,
         context: &(dyn CellContext + Send + Sync),
-        split_at: ahash::HashSet<HashBytes>,
+        split_at: HashSet<HashBytesKey, S>,
     ) -> Result<Cell, Error> {
         ParBuilderImpl {
             root: self.root,
@@ -358,20 +377,21 @@ where
 
     /// Multithread build of a Merkle proof using the default cell context
     /// and a set of cells which to handle in parallel.
-    pub fn par_build(self, split_at: ahash::HashSet<HashBytes>) -> Result<MerkleProof, Error> {
+    pub fn par_build(self, split_at: HashSet<HashBytesKey, S>) -> Result<MerkleProof, Error> {
         self.par_build_ext(Cell::empty_context(), split_at)
     }
 }
 
 /// Helper struct to build a Merkle proof and keep track of all pruned cells.
-pub struct MerkleProofExtBuilder<'a, F> {
+pub struct MerkleProofExtBuilder<'a, F, S = BuildCellHasher> {
     root: &'a DynCell,
     filter: F,
     allow_different_root: bool,
     prune_big_cells: bool,
+    _hasher: PhantomData<S>,
 }
 
-impl<F> MerkleProofExtBuilder<'_, F> {
+impl<F, S> MerkleProofExtBuilder<'_, F, S> {
     /// Mark whether the different root is ok for this proof.
     pub fn allow_different_root(mut self, allow: bool) -> Self {
         self.allow_different_root = allow;
@@ -386,15 +406,16 @@ impl<F> MerkleProofExtBuilder<'_, F> {
     }
 }
 
-impl<'a, F> MerkleProofExtBuilder<'a, F>
+impl<'a, F, S> MerkleProofExtBuilder<'a, F, S>
 where
     F: MerkleFilter,
+    S: BuildHasher + Default,
 {
     /// Builds a Merkle proof child cell using the specified cell context.
     pub fn build_raw_ext<'c: 'a>(
         self,
         context: &'c dyn CellContext,
-    ) -> Result<(Cell, ahash::HashSet<&'a HashBytes>), Error> {
+    ) -> Result<(Cell, HashSet<&'a HashBytesKey, S>), Error> {
         let mut pruned_branches = Default::default();
         let mut builder = BuilderImpl {
             root: self.root,
@@ -411,16 +432,17 @@ where
 }
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-impl<'a, F> MerkleProofExtBuilder<'a, F>
+impl<'a, F, S> MerkleProofExtBuilder<'a, F, S>
 where
     F: MerkleFilter + Send + Sync,
+    S: BuildHasher + Default + Clone + Send + Sync,
 {
     /// Multithreaded build a Merkle proof child cell using the specified cell context.
     pub fn par_build_raw_ext<'c: 'a>(
         self,
         context: &'c (dyn CellContext + Send + Sync),
-        split_at: ahash::HashSet<HashBytes>,
-    ) -> Result<(Cell, dashmap::DashSet<&'a HashBytes, ahash::RandomState>), Error> {
+        split_at: HashSet<HashBytesKey, S>,
+    ) -> Result<(Cell, dashmap::DashSet<&'a HashBytesKey, S>), Error> {
         let pruned_branches = Default::default();
         let builder = ParBuilderImpl {
             root: self.root,
@@ -437,17 +459,17 @@ where
     }
 }
 
-struct BuilderImpl<'a, 'b, 'c: 'a> {
+struct BuilderImpl<'a, 'b, 'c: 'a, S = BuildCellHasher> {
     root: &'a DynCell,
     filter: &'b dyn MerkleFilter,
-    cells: ahash::HashMap<&'a HashBytes, Cell>,
-    pruned_branches: Option<&'b mut ahash::HashSet<&'a HashBytes>>,
+    cells: HashMap<&'a HashBytesKey, Cell, S>,
+    pruned_branches: Option<&'b mut HashSet<&'a HashBytesKey, S>>,
     context: &'c dyn CellContext,
     allow_different_root: bool,
     prune_big_cells: bool,
 }
 
-impl BuilderImpl<'_, '_, '_> {
+impl<S: BuildHasher> BuilderImpl<'_, '_, '_, S> {
     fn build(&mut self) -> Result<Cell, Error> {
         struct Node<'a> {
             references: RefsIter<'a>,
@@ -478,7 +500,7 @@ impl BuilderImpl<'_, '_, '_> {
                 // Process children if they are left
 
                 let child_repr_hash = child.repr_hash();
-                let child = if let Some(child) = self.cells.get(child_repr_hash) {
+                let child = if let Some(child) = self.cells.get(child_repr_hash.as_key()) {
                     // Reused processed cells
                     child.clone()
                 } else {
@@ -506,7 +528,7 @@ impl BuilderImpl<'_, '_, '_> {
 
                             // Insert pruned branch for the current cell
                             if let Some(pruned_branch) = &mut self.pruned_branches {
-                                pruned_branch.insert(child_repr_hash);
+                                pruned_branch.insert(child_repr_hash.as_key());
                             }
 
                             // Use new pruned branch as a child
@@ -544,7 +566,8 @@ impl BuilderImpl<'_, '_, '_> {
                 let proof_cell = ok!(builder.build_ext(self.context));
 
                 // Save this cell as processed cell
-                self.cells.insert(cell.repr_hash(), proof_cell.clone());
+                self.cells
+                    .insert(cell.repr_hash().as_key(), proof_cell.clone());
 
                 match stack.last_mut() {
                     // Append this cell to the ancestor
@@ -563,19 +586,22 @@ impl BuilderImpl<'_, '_, '_> {
 }
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-struct ParBuilderImpl<'a, 'b, 'c: 'a> {
+struct ParBuilderImpl<'a, 'b, 'c: 'a, S> {
     root: &'a DynCell,
     filter: &'b (dyn MerkleFilter + Send + Sync),
-    cells: dashmap::DashMap<&'a HashBytes, ExtCell, ahash::RandomState>,
-    pruned_branches: Option<&'b dashmap::DashSet<&'a HashBytes, ahash::RandomState>>,
+    cells: dashmap::DashMap<&'a HashBytesKey, ExtCell, S>,
+    pruned_branches: Option<&'b dashmap::DashSet<&'a HashBytesKey, S>>,
     context: &'c (dyn CellContext + Send + Sync),
-    split_at: ahash::HashSet<HashBytes>,
+    split_at: HashSet<HashBytesKey, S>,
     allow_different_root: bool,
     prune_big_cells: bool,
 }
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-impl<'a> ParBuilderImpl<'a, '_, '_> {
+impl<'a, S> ParBuilderImpl<'a, '_, '_, S>
+where
+    S: BuildHasher + Clone + Send + Sync,
+{
     fn build(&self) -> Result<Cell, Error> {
         if !self.allow_different_root
             && self.filter.check(self.root.repr_hash()) == FilterAction::Skip
@@ -624,7 +650,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                 // Process children if they are left
                 let child_repr_hash = child.repr_hash();
 
-                let child = if let Some(child) = self.cells.get(child_repr_hash) {
+                let child = if let Some(child) = self.cells.get(child_repr_hash.as_key()) {
                     // Reused processed cells
                     child.clone()
                 } else {
@@ -652,7 +678,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
 
                             // Insert pruned branch for the current cell
                             if let Some(pruned_branch) = self.pruned_branches {
-                                pruned_branch.insert(child_repr_hash);
+                                pruned_branch.insert(child_repr_hash.as_key());
                             }
 
                             // Use new pruned branch as a child
@@ -662,7 +688,7 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                         _ => 'cell: {
                             if let Some(scope) = scope {
                                 #[allow(clippy::collapsible_if)]
-                                if unlikely(self.split_at.contains(child_repr_hash)) {
+                                if unlikely(self.split_at.contains(child_repr_hash.as_key())) {
                                     let promise = Promise::new();
                                     let parent_merkle_depth = last.merkle_depth;
                                     scope.spawn({
@@ -722,7 +748,8 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                 };
 
                 // Save this cell as processed cell
-                self.cells.insert(cell.repr_hash(), proof_cell.clone());
+                self.cells
+                    .insert(cell.repr_hash().as_key(), proof_cell.clone());
 
                 match stack.last_mut() {
                     // Append this cell to the ancestor

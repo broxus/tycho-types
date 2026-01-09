@@ -1,8 +1,8 @@
 use std::hint::black_box;
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use tycho_types::boc::Boc;
-use tycho_types::cell::Cell;
+use tycho_types::boc::{self, Boc};
+use tycho_types::cell::{BuildTrustedCellHasher, Cell};
 
 #[macro_export]
 macro_rules! decl_boc_benches {
@@ -45,6 +45,18 @@ macro_rules! decl_boc_benches {
             )*
             fn serialize_boc(input: Cell) {
                 let result = Boc::encode(&input);
+                _ = black_box(result);
+                std::mem::forget(input);
+            }
+
+            #[library_benchmark]
+            $(
+                #[bench::[<$name>](setup = [<$name _setup_de>])]
+            )*
+            fn serialize_boc_trusted(input: Cell) {
+                let mut result = Vec::new();
+                boc::ser::BocHeader::<BuildTrustedCellHasher>::with_root(input.as_ref()).encode(&mut result);
+
                 _ = black_box(result);
                 std::mem::forget(input);
             }
