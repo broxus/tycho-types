@@ -440,6 +440,7 @@ mod consensus_config_test {
         Ok(ConsensusConfig {
             clock_skew_millis: 5000.try_into()?,
             payload_batch_bytes: 786432.try_into()?,
+            _unused: 0,
             commit_history_rounds: 20.try_into()?,
             deduplicate_rounds: 140,
             max_consensus_lag_rounds: 210.try_into()?,
