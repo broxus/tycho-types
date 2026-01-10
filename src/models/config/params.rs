@@ -905,12 +905,13 @@ pub struct WorkUnitsParamsFinalize {
 /// consensus_config_tycho#d8
 ///     clock_skew_millis:uint16
 ///     payload_batch_bytes:uint32
+///     _unused:uint8
 ///     commit_history_rounds:uint8
 ///     deduplicate_rounds:uint16
 ///     max_consensus_lag_rounds:uint16
 ///     payload_buffer_bytes:uint32
-///     broadcast_retry_millis:uint8
-///     download_retry_millis:uint8
+///     broadcast_retry_millis:uint16
+///     download_retry_millis:uint16
 ///     download_peers:uint8
 ///     min_sign_attempts:uint8
 ///     download_peer_queries:uint8
@@ -939,12 +940,15 @@ pub struct ConsensusConfig {
     /// **NOTE: Affects overlay id.**
     pub payload_batch_bytes: NonZeroU32,
 
+    /// Free space, previously part of the next too large field
+    pub _unused: u8,
+
     /// Limits amount of rounds included in anchor history (points that appears in commit).
     ///
     /// Cannot be zero because commit history is essential.
     ///
     /// **NOTE: Affects overlay id.**
-    pub commit_history_rounds: NonZeroU16,
+    pub commit_history_rounds: NonZeroU8,
 
     /// Size (amount of rounds) of a sliding window to deduplicate external messages across anchors.
     ///
