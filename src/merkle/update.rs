@@ -153,7 +153,7 @@ impl MerkleUpdate {
 
     /// Tries to apply this Merkle update to the specified cell,
     /// producing a new cell with stats and using an empty cell context.
-    pub fn apply_with_stats(&self, old: &Cell) -> Result<ApplyResult, Error> {
+    pub fn apply_with_stats(&self, old: &Cell) -> Result<MerkleApplyResult, Error> {
         self.apply_ext_with_stats(old, Cell::empty_context())
     }
 
@@ -163,15 +163,15 @@ impl MerkleUpdate {
         &self,
         old: &Cell,
         context: &dyn CellContext,
-    ) -> Result<ApplyResult, Error> {
+    ) -> Result<MerkleApplyResult, Error> {
         if old.as_ref().repr_hash() != &self.old_hash {
             return Err(Error::InvalidData);
         }
 
         if self.old_hash == self.new_hash {
-            return Ok(ApplyResult {
+            return Ok(MerkleApplyResult {
                 cell: old.clone(),
-                stats: MerkleApplyStats::default(),
+                stats: MerkleStats::default(),
             });
         }
 
@@ -289,9 +289,9 @@ impl MerkleUpdate {
             // Note: +1 for root
             let new_cells_count = applier.new_cells.len() + 1;
 
-            Ok(ApplyResult {
+            Ok(MerkleApplyResult {
                 cell: new,
-                stats: MerkleApplyStats { new_cells_count },
+                stats: MerkleStats { new_cells_count },
             })
         } else {
             Err(Error::InvalidData)
@@ -315,7 +315,7 @@ impl MerkleUpdate {
         &self,
         old: &Cell,
         old_split_at: &ahash::HashSet<HashBytes>,
-    ) -> Result<ApplyResult, Error> {
+    ) -> Result<MerkleApplyResult, Error> {
         self.par_apply_ext_with_stats(old, old_split_at, Cell::empty_context())
     }
 
@@ -326,15 +326,15 @@ impl MerkleUpdate {
         old: &Cell,
         old_split_at: &ahash::HashSet<HashBytes>,
         context: &(dyn CellContext + Send + Sync),
-    ) -> Result<ApplyResult, Error> {
+    ) -> Result<MerkleApplyResult, Error> {
         if old.as_ref().repr_hash() != &self.old_hash {
             return Err(Error::InvalidData);
         }
 
         if self.old_hash == self.new_hash {
-            return Ok(ApplyResult {
+            return Ok(MerkleApplyResult {
                 cell: old.clone(),
-                stats: MerkleApplyStats::default(),
+                stats: MerkleStats::default(),
             });
         }
 
@@ -564,9 +564,9 @@ impl MerkleUpdate {
         };
 
         if new.as_ref().repr_hash() == &self.new_hash {
-            Ok(ApplyResult {
+            Ok(MerkleApplyResult {
                 cell: new,
-                stats: MerkleApplyStats { new_cells_count },
+                stats: MerkleStats { new_cells_count },
             })
         } else {
             Err(Error::InvalidData)
@@ -945,20 +945,29 @@ impl MerkleUpdate {
     }
 }
 
-/// Metadata collected during Merkle update.
+/// Metadata collected during `MerkleUpdate` operations.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct MerkleApplyStats {
-    /// Number of new (not pruned) cells created.
+pub struct MerkleStats {
+    /// Number of new (not pruned) cells.
     pub new_cells_count: usize,
 }
 
 /// Result of applying a Merkle update with metadata.
 #[derive(Debug, Clone)]
-pub struct ApplyResult {
+pub struct MerkleApplyResult {
     /// The new cell.
     pub cell: Cell,
     /// Metadata.
-    pub stats: MerkleApplyStats,
+    pub stats: MerkleStats,
+}
+
+/// Result of building a Merkle update with metadata.
+#[derive(Debug, Clone)]
+pub struct MerkleBuildResult {
+    /// The Merkle update.
+    pub update: MerkleUpdate,
+    /// Metadata.
+    pub stats: MerkleStats,
 }
 
 /// Helper struct to build a Merkle update.
@@ -982,8 +991,11 @@ where
         }
     }
 
-    /// Builds a Merkle update using the specified cell context.
-    pub fn build_ext(self, context: &dyn CellContext) -> Result<MerkleUpdate, Error> {
+    /// Builds a Merkle update with stats using the specified cell context.
+    pub fn build_ext_with_stats(
+        self,
+        context: &dyn CellContext,
+    ) -> Result<MerkleBuildResult, Error> {
         BuilderImpl {
             old: self.old,
             new: self.new,
@@ -995,7 +1007,13 @@ where
 
     /// Builds a Merkle update using an empty cell context.
     pub fn build(self) -> Result<MerkleUpdate, Error> {
-        self.build_ext(Cell::empty_context())
+        self.build_ext_with_stats(Cell::empty_context())
+            .map(|r| r.update)
+    }
+
+    /// Builds a Merkle update with stats using an empty cell context.
+    pub fn build_with_stats(self) -> Result<MerkleBuildResult, Error> {
+        self.build_ext_with_stats(Cell::empty_context())
     }
 }
 
@@ -1004,14 +1022,14 @@ impl<'a, F> MerkleUpdateBuilder<'a, F>
 where
     F: MerkleFilter + Send + Sync,
 {
-    /// Multithread build of a Merkle update using the specified cell context
+    /// Multithread build of a Merkle update with stats using the specified cell context
     /// and sets of cells which to handle in parallel.
-    pub fn par_build_ext(
+    pub fn par_build_ext_with_stats(
         self,
         old_split_at: ahash::HashSet<HashBytes>,
         new_split_at: ahash::HashSet<HashBytes>,
         context: &(dyn CellContext + Send + Sync),
-    ) -> Result<MerkleUpdate, Error> {
+    ) -> Result<MerkleBuildResult, Error> {
         ParBuilderImpl {
             old: self.old,
             new: self.new,
@@ -1028,7 +1046,18 @@ where
         old_split_at: ahash::HashSet<HashBytes>,
         new_split_at: ahash::HashSet<HashBytes>,
     ) -> Result<MerkleUpdate, Error> {
-        self.par_build_ext(old_split_at, new_split_at, Cell::empty_context())
+        self.par_build_ext_with_stats(old_split_at, new_split_at, Cell::empty_context())
+            .map(|r| r.update)
+    }
+
+    /// Multithread build of a Merkle update with stats using the default cell context
+    /// and sets of cells which to handle in parallel.
+    pub fn par_build_with_stats(
+        self,
+        old_split_at: ahash::HashSet<HashBytes>,
+        new_split_at: ahash::HashSet<HashBytes>,
+    ) -> Result<MerkleBuildResult, Error> {
+        self.par_build_ext_with_stats(old_split_at, new_split_at, Cell::empty_context())
     }
 }
 
@@ -1040,7 +1069,7 @@ struct BuilderImpl<'a, 'b, 'c: 'a> {
 }
 
 impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
-    fn build(self) -> Result<MerkleUpdate, Error> {
+    fn build(self) -> Result<MerkleBuildResult, Error> {
         struct Resolver<'a> {
             pruned_branches: ahash::HashSet<&'a HashBytes>,
             visited: ahash::HashMap<&'a HashBytes, bool>,
@@ -1113,17 +1142,21 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
         // Handle the simplest case with empty Merkle update
         if old_hash == new_hash {
             let pruned = ok!(make_pruned_branch(self.old, 0, self.context));
-            return Ok(MerkleUpdate {
-                old_hash: *old_hash,
-                new_hash: *old_hash,
-                old_depth,
-                new_depth: old_depth,
-                old: pruned.clone(),
-                new: pruned,
+            return Ok(MerkleBuildResult {
+                update: MerkleUpdate {
+                    old_hash: *old_hash,
+                    new_hash: *old_hash,
+                    old_depth,
+                    new_depth: old_depth,
+                    old: pruned.clone(),
+                    new: pruned,
+                },
+                stats: MerkleStats::default(),
             });
         }
 
         // Create Merkle proof cell which contains only new cells
+        let mut new_cells_count = 0usize;
         let (new, pruned_branches) = ok! {
             MerkleProofBuilder::<_>::new(
                 self.new,
@@ -1131,7 +1164,7 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
             )
             .track_pruned_branches()
             .allow_different_root(true)
-            .build_raw_ext(self.context)
+            .build_raw_ext(self.context, |new_cells| new_cells_count = new_cells.len())
         };
 
         let changed_cells = {
@@ -1159,13 +1192,16 @@ impl<'a: 'b, 'b, 'c: 'a> BuilderImpl<'a, 'b, 'c> {
         };
 
         // Done
-        Ok(MerkleUpdate {
-            old_hash: *old_hash,
-            new_hash: *new_hash,
-            old_depth,
-            new_depth,
-            old,
-            new,
+        Ok(MerkleBuildResult {
+            update: MerkleUpdate {
+                old_hash: *old_hash,
+                new_hash: *new_hash,
+                old_depth,
+                new_depth,
+                old,
+                new,
+            },
+            stats: MerkleStats { new_cells_count },
         })
     }
 }
@@ -1184,7 +1220,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
         self,
         old_split_at: ahash::HashSet<HashBytes>,
         new_split_at: ahash::HashSet<HashBytes>,
-    ) -> Result<MerkleUpdate, Error> {
+    ) -> Result<MerkleBuildResult, Error> {
         enum CheckResult<'a> {
             Immediate(bool),
             Parts {
@@ -1393,17 +1429,21 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
         // Handle the simplest case with empty Merkle update
         if old_hash == new_hash {
             let pruned = ok!(make_pruned_branch(self.old, 0, self.context));
-            return Ok(MerkleUpdate {
-                old_hash: *old_hash,
-                new_hash: *old_hash,
-                old_depth,
-                new_depth: old_depth,
-                old: pruned.clone(),
-                new: pruned,
+            return Ok(MerkleBuildResult {
+                update: MerkleUpdate {
+                    old_hash: *old_hash,
+                    new_hash: *old_hash,
+                    old_depth,
+                    new_depth: old_depth,
+                    old: pruned.clone(),
+                    new: pruned,
+                },
+                stats: MerkleStats::default(),
             });
         }
 
         // Create Merkle proof cell which contains only new cells
+        let mut new_cells_count = 0usize;
         let (new, pruned_branches) = ok! {
             MerkleProofBuilder::<_>::new(
                 self.new,
@@ -1411,7 +1451,7 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
             )
             .track_pruned_branches()
             .allow_different_root(true)
-            .par_build_raw_ext(self.context, new_split_at)
+            .par_build_raw_ext(self.context, new_split_at, |new_cells| new_cells_count = new_cells.len())
         };
 
         // Prepare cell diff resolver and find all changed cells in the old cell tree.
@@ -1439,13 +1479,16 @@ impl<'a: 'b, 'b, 'c: 'a> ParBuilderImpl<'a, 'b, 'c> {
         };
 
         // Done
-        Ok(MerkleUpdate {
-            old_hash: *old_hash,
-            new_hash: *new_hash,
-            old_depth,
-            new_depth,
-            old,
-            new,
+        Ok(MerkleBuildResult {
+            update: MerkleUpdate {
+                old_hash: *old_hash,
+                new_hash: *new_hash,
+                old_depth,
+                new_depth,
+                old,
+                new,
+            },
+            stats: MerkleStats { new_cells_count },
         })
     }
 }
@@ -1863,5 +1906,76 @@ mod tests {
 
         assert_eq!(result.cell.as_ref(), new_dict_cell.as_ref());
         assert_eq!(count_via_traversal, result.stats.new_cells_count,);
+    }
+
+    #[test]
+    fn test_build_new_cells_count() {
+        // Create dict with keys 0..20
+        let mut dict = Dict::<u32, u32>::new();
+        for i in 0..20 {
+            dict.add(i, i * 10).unwrap();
+        }
+
+        // Serialize old dict
+        let old_dict_cell = CellBuilder::build_from(&dict).unwrap();
+        let old_dict_hashes = visit_all_cells(&old_dict_cell);
+
+        // Modify dict
+        dict.set(0, 1).unwrap();
+        dict.set(5, 999).unwrap();
+        dict.set(10, 9999).unwrap();
+        dict.set(15, 99999).unwrap();
+        let new_dict_cell = CellBuilder::build_from(dict).unwrap();
+
+        assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
+
+        // Create merkle update with stats
+        let result = MerkleUpdate::create(
+            old_dict_cell.as_ref(),
+            new_dict_cell.as_ref(),
+            old_dict_hashes,
+        )
+        .build_with_stats()
+        .unwrap();
+
+        // Count new cells via traversal
+        let count_via_traversal = count_new_cells(&result.update);
+        assert_eq!(count_via_traversal, result.stats.new_cells_count);
+    }
+
+    #[test]
+    #[cfg(all(feature = "rayon", feature = "sync"))]
+    fn test_par_build_new_cells_count() {
+        // Create dict with keys 0..20
+        let mut dict = Dict::<u32, u32>::new();
+        for i in 0..20 {
+            dict.add(i, i * 10).unwrap();
+        }
+
+        // Serialize old dict
+        let old_dict_cell = CellBuilder::build_from(&dict).unwrap();
+        let old_dict_hashes = visit_all_cells(&old_dict_cell);
+
+        // Modify dict
+        dict.set(0, 1).unwrap();
+        dict.set(5, 999).unwrap();
+        dict.set(10, 9999).unwrap();
+        dict.set(15, 99999).unwrap();
+        let new_dict_cell = CellBuilder::build_from(dict).unwrap();
+
+        assert_ne!(old_dict_cell.as_ref(), new_dict_cell.as_ref());
+
+        // Create merkle update with stats using parallel build
+        let result = MerkleUpdate::create(
+            old_dict_cell.as_ref(),
+            new_dict_cell.as_ref(),
+            old_dict_hashes,
+        )
+        .par_build_with_stats(Default::default(), Default::default())
+        .unwrap();
+
+        // Count new cells via traversal
+        let count_via_traversal = count_new_cells(&result.update);
+        assert_eq!(count_via_traversal, result.stats.new_cells_count);
     }
 }

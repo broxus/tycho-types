@@ -391,10 +391,14 @@ where
     F: MerkleFilter,
 {
     /// Builds a Merkle proof child cell using the specified cell context.
-    pub fn build_raw_ext<'c: 'a>(
+    pub fn build_raw_ext<'c: 'a, S>(
         self,
         context: &'c dyn CellContext,
-    ) -> Result<(Cell, ahash::HashSet<&'a HashBytes>), Error> {
+        inspect_new_cells: S,
+    ) -> Result<(Cell, ahash::HashSet<&'a HashBytes>), Error>
+    where
+        S: FnOnce(&NewCellsMap<'a>),
+    {
         let mut pruned_branches = Default::default();
         let mut builder = BuilderImpl {
             root: self.root,
@@ -406,6 +410,7 @@ where
             prune_big_cells: self.prune_big_cells,
         };
         let cell = ok!(builder.build());
+        inspect_new_cells(&builder.cells);
         Ok((cell, pruned_branches))
     }
 }
@@ -416,11 +421,15 @@ where
     F: MerkleFilter + Send + Sync,
 {
     /// Multithreaded build a Merkle proof child cell using the specified cell context.
-    pub fn par_build_raw_ext<'c: 'a>(
+    pub fn par_build_raw_ext<'c: 'a, S>(
         self,
         context: &'c (dyn CellContext + Send + Sync),
         split_at: ahash::HashSet<HashBytes>,
-    ) -> Result<(Cell, dashmap::DashSet<&'a HashBytes, ahash::RandomState>), Error> {
+        inspect_new_cells: S,
+    ) -> Result<(Cell, dashmap::DashSet<&'a HashBytes, ahash::RandomState>), Error>
+    where
+        S: FnOnce(&NewCellsDashMap<'a>),
+    {
         let pruned_branches = Default::default();
         let builder = ParBuilderImpl {
             root: self.root,
@@ -433,14 +442,17 @@ where
             prune_big_cells: self.prune_big_cells,
         };
         let cell = ok!(builder.build());
+        inspect_new_cells(&builder.cells);
         Ok((cell, pruned_branches))
     }
 }
 
+type NewCellsMap<'a> = ahash::HashMap<&'a HashBytes, Cell>;
+
 struct BuilderImpl<'a, 'b, 'c: 'a> {
     root: &'a DynCell,
     filter: &'b dyn MerkleFilter,
-    cells: ahash::HashMap<&'a HashBytes, Cell>,
+    cells: NewCellsMap<'a>,
     pruned_branches: Option<&'b mut ahash::HashSet<&'a HashBytes>>,
     context: &'c dyn CellContext,
     allow_different_root: bool,
@@ -561,6 +573,9 @@ impl BuilderImpl<'_, '_, '_> {
         Err(Error::EmptyProof)
     }
 }
+
+#[cfg(all(feature = "rayon", feature = "sync"))]
+type NewCellsDashMap<'a> = dashmap::DashMap<&'a HashBytes, ExtCell, ahash::RandomState>;
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
 struct ParBuilderImpl<'a, 'b, 'c: 'a> {
