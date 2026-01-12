@@ -941,6 +941,7 @@ pub struct ConsensusConfig {
     pub payload_batch_bytes: NonZeroU32,
 
     /// Free space, previously part of the next too large field
+    #[cfg_attr(feature = "serde", serde(default))]
     pub _unused: u8,
 
     /// Limits amount of rounds included in anchor history (points that appears in commit).
