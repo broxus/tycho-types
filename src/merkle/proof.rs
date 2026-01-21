@@ -504,6 +504,10 @@ impl BuilderImpl<'_, '_, '_> {
                                 self.context
                             ));
 
+                            // Remember that this child was replaced with a pruned branch.
+                            let replaced = self.cells.insert(child_repr_hash, child.clone());
+                            debug_assert!(replaced.is_none());
+
                             // Insert pruned branch for the current cell
                             if let Some(pruned_branch) = &mut self.pruned_branches {
                                 pruned_branch.insert(child_repr_hash);
@@ -649,6 +653,12 @@ impl<'a> ParBuilderImpl<'a, '_, '_> {
                                 last.merkle_depth,
                                 self.context
                             ));
+
+                            // Remember that this child was replaced with a pruned branch.
+                            let replaced = self
+                                .cells
+                                .insert(child_repr_hash, ExtCell::Ordinary(child.clone()));
+                            debug_assert!(replaced.is_none());
 
                             // Insert pruned branch for the current cell
                             if let Some(pruned_branch) = self.pruned_branches {
