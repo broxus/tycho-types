@@ -82,6 +82,11 @@ impl CellParts<'_> {
 
         let references = self.references.as_ref();
 
+        // Just in case check once more if data is enough to fit the specified number of bits.
+        if unlikely(self.data.len() < bit_len.div_ceil(8)) {
+            return Err(Error::InvalidCell);
+        }
+
         // `hashes_len` is guaranteed to be in range 1..4
         let mut hashes_len = level + 1;
 
@@ -113,7 +118,19 @@ impl CellParts<'_> {
                 // 8 bits type, hash, depth
                 Some(CellType::MerkleProof) => {
                     const EXPECTED_BIT_LEN: usize = 8 + HASH_BITS + DEPTH_BITS;
-                    if unlikely(bit_len != EXPECTED_BIT_LEN || references.len() != 1) {
+                    if unlikely(
+                        bit_len != EXPECTED_BIT_LEN
+                            || references.len() != 1
+                            || self.data.len() < 35,
+                    ) {
+                        return Err(Error::InvalidCell);
+                    }
+
+                    let stored_hash = &self.data[1..33];
+                    let stored_depth = u16::from_be_bytes([self.data[33], self.data[34]]);
+
+                    let child = &references[0];
+                    if unlikely(child.hash(0) != stored_hash || child.depth(0) != stored_depth) {
                         return Err(Error::InvalidCell);
                     }
 
@@ -122,7 +139,28 @@ impl CellParts<'_> {
                 // 8 bits type, 2 x (hash, depth)
                 Some(CellType::MerkleUpdate) => {
                     const EXPECTED_BIT_LEN: usize = 8 + 2 * (HASH_BITS + DEPTH_BITS);
-                    if unlikely(bit_len != EXPECTED_BIT_LEN || references.len() != 2) {
+                    if unlikely(
+                        bit_len != EXPECTED_BIT_LEN
+                            || references.len() != 2
+                            || self.data.len() < 69,
+                    ) {
+                        return Err(Error::InvalidCell);
+                    }
+
+                    let stored_old_hash = &self.data[1..33];
+                    let stored_new_hash = &self.data[33..65];
+
+                    let stored_old_depth = u16::from_be_bytes([self.data[65], self.data[66]]);
+                    let stored_new_depth = u16::from_be_bytes([self.data[67], self.data[68]]);
+
+                    let old = &references[0];
+                    let new = &references[1];
+                    if unlikely(
+                        old.hash(0) != stored_old_hash
+                            || old.depth(0) != stored_old_depth
+                            || new.hash(0) != stored_new_hash
+                            || new.depth(0) != stored_new_depth,
+                    ) {
                         return Err(Error::InvalidCell);
                     }
 

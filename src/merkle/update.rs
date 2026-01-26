@@ -1598,6 +1598,54 @@ mod tests {
         assert_eq!(only_new_refs.refs, refs_for_both.refs);
     }
 
+    #[test]
+    fn build_invalid_update() {
+        let old = CellBuilder::build_from((123u32, Cell::empty_cell())).unwrap();
+        let new = CellBuilder::build_from((234u32, &old)).unwrap();
+
+        for update in [
+            // Invalid old hash
+            MerkleUpdate {
+                old_hash: HashBytes::ZERO,
+                new_hash: *new.hash(0),
+                old_depth: old.depth(0),
+                new_depth: new.depth(0),
+                old: old.clone(),
+                new: new.clone(),
+            },
+            // Invalid new hash
+            MerkleUpdate {
+                old_hash: *old.hash(0),
+                new_hash: HashBytes::ZERO,
+                old_depth: 0,
+                new_depth: 0,
+                old: old.clone(),
+                new: new.clone(),
+            },
+            // Invalid old depth
+            MerkleUpdate {
+                old_hash: *old.hash(0),
+                new_hash: *new.hash(0),
+                old_depth: 123,
+                new_depth: new.depth(0),
+                old: old.clone(),
+                new: new.clone(),
+            },
+            // Invalid new depth
+            MerkleUpdate {
+                old_hash: *old.hash(0),
+                new_hash: *new.hash(0),
+                old_depth: old.depth(0),
+                new_depth: 123,
+                old,
+                new,
+            },
+        ] {
+            let err = CellBuilder::build_from(update).unwrap_err();
+            assert_eq!(err, Error::InvalidCell);
+        }
+    }
+
     #[derive(Default)]
     struct RefsStorage<'a> {
         refs: ahash::HashMap<&'a HashBytes, u32>,

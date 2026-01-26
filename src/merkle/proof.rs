@@ -751,3 +751,31 @@ fn make_pruned_branch_cold(
 
 const PRUNED_BITS_THRESHOLD: u16 = 288;
 const MAX_OK_DEPTH: usize = 128;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_invalid_proof() {
+        let cell = CellBuilder::build_from((123u32, Cell::empty_cell())).unwrap();
+
+        for proof in [
+            // Invalid hash
+            MerkleProof {
+                hash: HashBytes::ZERO,
+                depth: cell.depth(0),
+                cell: cell.clone(),
+            },
+            // Invalid depth
+            MerkleProof {
+                hash: *cell.hash(0),
+                depth: 123,
+                cell,
+            },
+        ] {
+            let err = CellBuilder::build_from(proof).unwrap_err();
+            assert_eq!(err, Error::InvalidCell);
+        }
+    }
+}
