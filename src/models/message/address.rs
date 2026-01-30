@@ -369,6 +369,15 @@ impl StdAddr {
     /// Same as `StdAddr::default()`.
     pub const ZERO: Self = Self::new(0, HashBytes::ZERO);
 
+    /// Constructs a new masterchain standard address without anycast info.
+    pub const fn new_masterchain(address: HashBytes) -> Self {
+        Self {
+            anycast: None,
+            workchain: ShardIdent::MASTERCHAIN.workchain() as i8,
+            address,
+        }
+    }
+
     /// Constructs a new standard address without anycast info.
     #[inline]
     pub const fn new(workchain: i8, address: HashBytes) -> Self {

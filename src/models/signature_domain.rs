@@ -6,6 +6,49 @@ use std::borrow::Cow;
 use ed25519_dalek::Signer;
 use tl_proto::{TlRead, TlWrite};
 
+use crate::models::{GlobalCapabilities, GlobalCapability};
+
+/// Signature operations context based on network capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSignatureContext {
+    /// Global id of the network.
+    pub global_id: i32,
+    /// Network capabilities.
+    pub capabilities: GlobalCapabilities,
+}
+
+impl AutoSignatureContext {
+    /// Signs arbitrary data using the key and optional signature id.
+    #[cfg(feature = "abi")]
+    pub fn sign(&self, key: &ed25519_dalek::SigningKey, data: &[u8]) -> ed25519_dalek::Signature {
+        let data = self.apply(data);
+        key.sign(&data)
+    }
+
+    /// Prepares arbitrary data for signing.
+    pub fn apply<'a>(&self, data: &'a [u8]) -> Cow<'a, [u8]> {
+        if self
+            .capabilities
+            .contains(GlobalCapability::CapSignatureDomain)
+        {
+            SignatureDomain::L2 {
+                global_id: self.global_id,
+            }
+            .apply(data)
+        } else if self
+            .capabilities
+            .contains(GlobalCapability::CapSignatureWithId)
+        {
+            let mut result = Vec::with_capacity(4 + data.len());
+            result.extend_from_slice(&self.global_id.to_be_bytes());
+            result.extend_from_slice(data);
+            Cow::Owned(result)
+        } else {
+            Cow::Borrowed(data)
+        }
+    }
+}
+
 /// Signature domain variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TlRead, TlWrite)]
 #[tl(
