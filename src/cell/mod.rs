@@ -137,6 +137,15 @@ pub trait CellImpl {
     /// Returns the Nth child cell.
     fn reference_cloned(&self, index: u8) -> Option<Cell>;
 
+    /// Returns a repr hash of the Nth child cell.
+    ///
+    /// This method is needed when the underlying implementation
+    /// lazily loads child cells. With this method there is
+    /// no need to load anything and it just returns the hash.
+    ///
+    /// NOTE: This hash is not affected by virtualization.
+    fn reference_repr_hash(&self, index: u8) -> Option<HashBytes>;
+
     /// Returns this cell as a virtualized cell, so that all hashes
     /// and depths will have an offset.
     fn virtualize(&self) -> &DynCell;
@@ -224,6 +233,16 @@ impl DynCell {
     #[inline]
     pub fn references(&self) -> RefsIter<'_> {
         RefsIter {
+            cell: self,
+            max: self.reference_count(),
+            index: 0,
+        }
+    }
+
+    /// Creates an iterator over child hashes.
+    #[inline]
+    pub fn reference_repr_hashes(&self) -> RefsHashesIter<'_> {
+        RefsHashesIter {
             cell: self,
             max: self.reference_count(),
             index: 0,
@@ -586,6 +605,93 @@ impl DoubleEndedIterator for ClonedRefsIter<'_> {
 }
 
 impl ExactSizeIterator for ClonedRefsIter<'_> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.size_hint().0
+    }
+}
+
+/// An iterator over child hashes.
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+pub struct RefsHashesIter<'a> {
+    cell: &'a DynCell,
+    max: u8,
+    index: u8,
+}
+
+impl<'a> RefsHashesIter<'a> {
+    /// Returns a cell by children of which we are iterating.
+    #[inline]
+    pub fn cell(&self) -> &'a DynCell {
+        self.cell
+    }
+
+    /// Returns the `next()` value without advancing the iterator.
+    #[inline]
+    pub fn peek(&self) -> Option<HashBytes> {
+        if self.index >= self.max {
+            None
+        } else {
+            self.cell.reference_repr_hash(self.index)
+        }
+    }
+
+    /// Returns the `next_back()` value without advancing the iterator.
+    #[inline]
+    pub fn peek_prev(&self) -> Option<HashBytes> {
+        if let Some(index) = self.index.checked_sub(1) {
+            self.cell.reference_repr_hash(index)
+        } else {
+            None
+        }
+    }
+}
+
+impl Clone for RefsHashesIter<'_> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell,
+            max: self.max,
+            index: self.index,
+        }
+    }
+}
+
+impl Iterator for RefsHashesIter<'_> {
+    type Item = HashBytes;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.max {
+            None
+        } else {
+            let hash = self.cell.reference_repr_hash(self.index);
+            self.index += 1;
+            hash
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.max.saturating_sub(self.index) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl DoubleEndedIterator for RefsHashesIter<'_> {
+    #[inline]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.max > self.index {
+            self.max -= 1;
+            self.cell.reference_repr_hash(self.max)
+        } else {
+            None
+        }
+    }
+}
+
+impl ExactSizeIterator for RefsHashesIter<'_> {
     #[inline]
     fn len(&self) -> usize {
         self.size_hint().0

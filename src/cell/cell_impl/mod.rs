@@ -62,6 +62,10 @@ impl CellImpl for EmptyOrdinaryCell {
         None
     }
 
+    fn reference_repr_hash(&self, _: u8) -> Option<HashBytes> {
+        None
+    }
+
     fn virtualize(&self) -> &DynCell {
         self
     }
@@ -126,6 +130,10 @@ impl CellImpl for StaticCell {
     }
 
     fn reference_cloned(&self, _: u8) -> Option<Cell> {
+        None
+    }
+
+    fn reference_repr_hash(&self, _: u8) -> Option<HashBytes> {
         None
     }
 
@@ -254,6 +262,10 @@ impl<const N: usize> CellImpl for OrdinaryCell<N> {
         Some(self.header.reference(index)?.clone())
     }
 
+    fn reference_repr_hash(&self, index: u8) -> Option<HashBytes> {
+        Some(*self.header.reference(index)?.repr_hash())
+    }
+
     fn virtualize(&self) -> &DynCell {
         if self.header.descriptor.level_mask().is_empty() {
             self
@@ -304,6 +316,10 @@ impl CellImpl for LibraryReference {
     }
 
     fn reference_cloned(&self, _: u8) -> Option<Cell> {
+        None
+    }
+
+    fn reference_repr_hash(&self, _: u8) -> Option<HashBytes> {
         None
     }
 
@@ -361,6 +377,10 @@ impl<const N: usize> CellImpl for PrunedBranch<N> {
     }
 
     fn reference_cloned(&self, _: u8) -> Option<Cell> {
+        None
+    }
+
+    fn reference_repr_hash(&self, _: u8) -> Option<HashBytes> {
         None
     }
 
@@ -432,6 +452,10 @@ where
         Some(Cell::virtualize(self.0.as_ref().reference_cloned(index)?))
     }
 
+    fn reference_repr_hash(&self, index: u8) -> Option<HashBytes> {
+        self.0.as_ref().reference_repr_hash(index)
+    }
+
     fn virtualize(&self) -> &DynCell {
         self.0.as_ref().virtualize()
     }
@@ -487,6 +511,10 @@ where
 
     fn reference_cloned(&self, index: u8) -> Option<Cell> {
         dyn_reference_virtualize_cloned(&self.0, index)
+    }
+
+    fn reference_repr_hash(&self, index: u8) -> Option<HashBytes> {
+        self.0.reference_repr_hash(index)
     }
 
     fn virtualize(&self) -> &DynCell {

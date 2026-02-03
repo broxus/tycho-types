@@ -157,6 +157,10 @@ impl CellImpl for UsageCell {
         }
     }
 
+    fn reference_repr_hash(&self, index: u8) -> Option<HashBytes> {
+        self.cell.reference_repr_hash(index)
+    }
+
     fn virtualize(&self) -> &DynCell {
         VirtualCellWrapper::wrap(self)
     }

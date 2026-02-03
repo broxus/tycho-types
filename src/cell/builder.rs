@@ -1558,6 +1558,10 @@ impl CellImpl for IntermediateDataCell {
         None
     }
 
+    fn reference_repr_hash(&self, _: u8) -> Option<HashBytes> {
+        None
+    }
+
     fn virtualize(&self) -> &DynCell {
         self
     }
@@ -1611,6 +1615,10 @@ impl CellImpl for IntermediateFullCell {
 
     fn reference_cloned(&self, index: u8) -> Option<Cell> {
         self.0.references.get(index).cloned()
+    }
+
+    fn reference_repr_hash(&self, index: u8) -> Option<HashBytes> {
+        Some(*self.0.references.get(index)?.repr_hash())
     }
 
     fn virtualize(&self) -> &DynCell {
