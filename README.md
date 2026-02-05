@@ -31,7 +31,7 @@ use tycho_types::boc::BocRepr;
 let proof = MerkleProof::create_for_cell(cell.as_ref(), some_filter).build()?;
 
 let encoded = BocRepr::encode_base64(proof)?;
-let decoded = BocRepr::decode_base64(encoded)?:
+let decoded = BocRepr::decode_base64(encoded)?;
 ```
 
 Parse TLB type from `Cell`:
@@ -54,11 +54,11 @@ Use `CellBuilder` to create any `Cell`:
 ```rust
 let mut builder = CellBuilder::new();
 builder.store_bit_one()?;
-builder.store_u32(100u32)?
+builder.store_u32(100u32)?;
 builder.store_slice(slice)?;
 builder.store_raw(&[0xdd, 0x55], 10)?;
 
-// store references to another cells
+// store references to another cell
 builder.store_reference(cell)?;
 builder.store_reference(another_cell)?;
 
