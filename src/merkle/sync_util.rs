@@ -1,3 +1,5 @@
+//! Sync util for parallel merkle algorithms.
+
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::cell::{Cell, CellBuilder, CellContext, CellDataBuilder, CellRefsBuilder};
@@ -5,14 +7,19 @@ use crate::error::Error;
 
 // === Delayed Cell Stuff ===
 
+/// Optionally deferred tree.
 #[derive(Clone)]
 pub enum ExtCell {
+    /// Direct cell.
     Ordinary(Cell),
+    /// A subtree with deferred cell in it.
     Partial(Arc<ExtCellParts>),
+    /// A cell yet to be processed.
     Deferred(Promise<Result<ExtCell, Error>>),
 }
 
 impl ExtCell {
+    /// Wait for the cell.
     pub fn resolve(mut self, context: &(dyn CellContext + Send + Sync)) -> Result<Cell, Error> {
         loop {
             match self {
@@ -37,19 +44,27 @@ impl ExtCell {
     }
 }
 
+/// Deferred subtree builder.
 #[derive(Clone)]
 pub struct ExtCellParts {
+    /// Cell data.
     pub data: CellDataBuilder,
+    /// Whether the cell is exotic.
     pub is_exotic: bool,
+    /// Deferred references.
     pub refs: Vec<ExtCell>,
 }
 
+/// Deferred refs builder.
 pub enum ChildrenBuilder {
+    /// Direct refs builder.
     Ordinary(CellRefsBuilder),
+    /// Deferred references.
     Extended(Vec<ExtCell>),
 }
 
 impl ChildrenBuilder {
+    /// Adds a deferred reference to the builder.
     pub fn store_reference(&mut self, cell: ExtCell) -> Result<(), Error> {
         match (&mut *self, cell) {
             (Self::Ordinary(builder), ExtCell::Ordinary(cell)) => builder.store_reference(cell),
@@ -83,6 +98,7 @@ impl ChildrenBuilder {
 
 // === Promise Stuff ===
 
+/// A stuff which will be known in a future.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Promise<T> {
@@ -97,12 +113,14 @@ impl<T> Default for Promise<T> {
 }
 
 impl<T> Promise<T> {
+    /// Creates an empty promise.
     pub fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
 
+    /// Sets value of the promise.
     pub fn set(&self, value: T) {
         let (lock, cvar) = &*self.inner;
         let mut data = lock.lock().unwrap();
@@ -110,6 +128,7 @@ impl<T> Promise<T> {
         cvar.notify_all();
     }
 
+    /// Waits for some value to be set.
     pub fn wait_cloned(&self) -> T
     where
         T: Clone,

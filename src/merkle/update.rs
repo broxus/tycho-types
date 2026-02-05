@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 #[cfg(all(feature = "rayon", feature = "sync"))]
 use std::sync::Arc;
 
@@ -175,59 +176,6 @@ impl MerkleUpdate {
             });
         }
 
-        struct Applier<'a> {
-            old_cells: ahash::HashMap<HashBytes, Cell>,
-            new_cells: ahash::HashMap<HashBytes, Cell>,
-            context: &'a dyn CellContext,
-        }
-
-        impl Applier<'_> {
-            fn run(&mut self, cell: &DynCell, merkle_depth: u8) -> Result<Cell, Error> {
-                let descriptor = cell.descriptor();
-                let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
-
-                // Start building a new cell
-                let mut result = CellBuilder::new();
-                result.set_exotic(descriptor.is_exotic());
-
-                // Build all child cells
-                for child in cell.references().cloned() {
-                    let child_descriptor = child.as_ref().descriptor();
-
-                    let child = if child_descriptor.is_pruned_branch() {
-                        // Replace pruned branches with old cells
-                        let mask = child_descriptor.level_mask();
-                        if mask.to_byte() & (1 << child_merkle_depth) != 0 {
-                            // Use original hash for pruned branches
-                            let child_hash = child.as_ref().hash(mask.level() - 1);
-                            match self.old_cells.get(child_hash) {
-                                Some(cell) => cell.clone(),
-                                None => return Err(Error::InvalidData),
-                            }
-                        } else {
-                            child
-                        }
-                    } else {
-                        // Build a child cell if it hasn't been built before
-                        let child_hash = child.as_ref().hash(child_merkle_depth);
-                        if let Some(child) = self.new_cells.get(child_hash) {
-                            child.clone()
-                        } else {
-                            let child = ok!(self.run(child.as_ref(), child_merkle_depth));
-                            self.new_cells.insert(*child_hash, child.clone());
-                            child
-                        }
-                    };
-
-                    _ = result.store_reference(child);
-                }
-
-                _ = result.store_cell_data(cell);
-
-                result.build_ext(self.context)
-            }
-        }
-
         // Collect old cells
         let old_cells = {
             // Collect and check old cells tree
@@ -277,10 +225,76 @@ impl MerkleUpdate {
         };
 
         // Apply changed cells
-        let mut applier = Applier {
-            old_cells,
+        let mut applier = MerkleUpdateApplier::<_, &HashBytes> {
             new_cells: Default::default(),
             context,
+            find_cell: move |hash: &HashBytes| old_cells.get(hash).cloned(),
+            find_in_new_cells: false,
+        };
+
+        let new = applier.run(self.new.as_ref(), 0)?;
+
+        if new.as_ref().repr_hash() == &self.new_hash {
+            // Note: +1 for root
+            let new_cells_count = applier.new_cells.len() + 1;
+
+            Ok(MerkleApplyResult {
+                cell: new,
+                stats: MerkleStats { new_cells_count },
+            })
+        } else {
+            Err(Error::InvalidData)
+        }
+    }
+
+    /// Applies new cell using the specified method to find an existing one.
+    ///
+    /// Must only be used for trusted merkle updates.
+    pub fn apply_trusted<F>(&self, find_cell: F) -> Result<Cell, Error>
+    where
+        for<'a> F: FnMut(&'a HashBytes) -> Option<Cell>,
+    {
+        self.apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
+            .map(|r| r.cell)
+    }
+
+    /// Applies new cell using the specified method to find an existing one.
+    ///
+    /// Must only be used for trusted merkle updates.
+    pub fn apply_trusted_with_stats<F>(&self, find_cell: F) -> Result<MerkleApplyResult, Error>
+    where
+        for<'a> F: FnMut(&'a HashBytes) -> Option<Cell>,
+    {
+        self.apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
+    }
+
+    /// Applies new cell using the specified method to find an existing one.
+    ///
+    /// Must only be used for trusted merkle updates.
+    pub fn apply_trusted_ext_with_stats<F>(
+        &self,
+        mut find_cell: F,
+        context: &dyn CellContext,
+    ) -> Result<MerkleApplyResult, Error>
+    where
+        for<'a> F: FnMut(&'a HashBytes) -> Option<Cell>,
+    {
+        if self.old_hash == self.new_hash {
+            let Some(cell) = find_cell(&self.old_hash) else {
+                return Err(Error::InvalidData);
+            };
+            return Ok(MerkleApplyResult {
+                cell,
+                stats: Default::default(),
+            });
+        }
+
+        // Apply changed cells
+        let mut applier = MerkleUpdateApplier::<F, &HashBytes> {
+            new_cells: Default::default(),
+            context,
+            find_cell,
+            find_in_new_cells: false,
         };
 
         let new = applier.run(self.new.as_ref(), 0)?;
@@ -336,118 +350,6 @@ impl MerkleUpdate {
                 cell: old.clone(),
                 stats: MerkleStats::default(),
             });
-        }
-
-        struct Applier<'a> {
-            old_cells: dashmap::DashMap<&'a HashBytes, Cell, ahash::RandomState>,
-            new_cells: dashmap::DashMap<HashBytes, ExtCell, ahash::RandomState>,
-            context: &'a (dyn CellContext + Send + Sync),
-        }
-
-        impl Applier<'_> {
-            // TODO: Replace with a non-recursive impl
-            fn run<'scope>(
-                &'scope self,
-                cell: &DynCell,
-                merkle_depth: u8,
-                traverse_depth: u16,
-                scope: Option<&rayon::Scope<'scope>>,
-            ) -> Result<ExtCell, Error> {
-                let descriptor = cell.descriptor();
-                let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
-
-                // Start building a new cell
-                let mut builder = ChildrenBuilder::Ordinary(Default::default());
-
-                // Build all child cells
-                for child in cell.references().cloned() {
-                    let child_descriptor = child.as_ref().descriptor();
-
-                    let child = ok!(if child_descriptor.is_pruned_branch() {
-                        self.resolve_pruned_branch(child, child_descriptor, child_merkle_depth)
-                    } else {
-                        self.resolve_subtree(child, child_merkle_depth, traverse_depth, scope)
-                    });
-
-                    ok!(builder.store_reference(child));
-                }
-
-                // Build the cell
-                match builder {
-                    ChildrenBuilder::Ordinary(refs) => {
-                        let mut builder = CellBuilder::new();
-                        builder.set_exotic(cell.is_exotic());
-                        _ = builder.store_cell_data(cell);
-                        builder.set_references(refs);
-
-                        builder.build_ext(self.context).map(ExtCell::Ordinary)
-                    }
-                    ChildrenBuilder::Extended(refs) => {
-                        let mut builder = CellDataBuilder::new();
-                        builder.store_cell_data(cell)?;
-                        Ok(ExtCell::Partial(Arc::new(ExtCellParts {
-                            data: builder,
-                            is_exotic: cell.is_exotic(),
-                            refs,
-                        })))
-                    }
-                }
-            }
-
-            // Replace pruned branches with old cells
-            fn resolve_pruned_branch(
-                &self,
-                cell: Cell,
-                descriptor: CellDescriptor,
-                merkle_depth: u8,
-            ) -> Result<ExtCell, Error> {
-                let mask = descriptor.level_mask();
-                if mask.to_byte() & (1 << merkle_depth) != 0 {
-                    // Use original hash for pruned branches
-                    let child_hash = cell.as_ref().hash(mask.level() - 1);
-                    match self.old_cells.get(child_hash) {
-                        Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
-                        None => Err(Error::InvalidData),
-                    }
-                } else {
-                    Ok(ExtCell::Ordinary(cell))
-                }
-            }
-
-            // Build a child cell if it hasn't been built before
-            fn resolve_subtree<'scope>(
-                &'scope self,
-                cell: Cell,
-                merkle_depth: u8,
-                traverse_depth: u16,
-                scope: Option<&rayon::Scope<'scope>>,
-            ) -> Result<ExtCell, Error> {
-                let hash = cell.as_ref().hash(merkle_depth);
-
-                if let Some(child) = self.new_cells.get(hash) {
-                    return Ok(child.clone());
-                }
-
-                if let Some(scope) = scope
-                    && traverse_depth > ROOT_SPLIT_DEPTH
-                    && cell.repr_depth() > CHILD_SPLIT_DEPTH
-                {
-                    let promise = Promise::new();
-                    scope.spawn({
-                        let promise = promise.clone();
-                        move |_| {
-                            let result =
-                                self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
-                            promise.set(result);
-                        }
-                    });
-                    return Ok(ExtCell::Deferred(promise));
-                }
-
-                let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
-                self.new_cells.insert(*hash, cell.clone());
-                Ok(cell)
-            }
         }
 
         // Finds original old cell roots by their hashes.
@@ -548,10 +450,78 @@ impl MerkleUpdate {
 
         // Apply changed cells
         let (new, new_cells_count) = {
-            let applier = Applier {
-                old_cells,
+            let applier = ParMerkleUpdateApplier::<_> {
                 new_cells: Default::default(),
                 context,
+                find_cell: move |hash: &HashBytes| old_cells.get(hash).map(|c| c.clone()),
+                find_in_new_cells: false,
+            };
+
+            let new = rayon::scope(|scope| applier.run(self.new.as_ref(), 0, 0, Some(scope)))?;
+            let cell = new.resolve(context)?;
+
+            // Note: +1 for root
+            let count = applier.new_cells.len() + 1;
+
+            (cell, count)
+        };
+
+        if new.as_ref().repr_hash() == &self.new_hash {
+            Ok(MerkleApplyResult {
+                cell: new,
+                stats: MerkleStats { new_cells_count },
+            })
+        } else {
+            Err(Error::InvalidData)
+        }
+    }
+
+    /// Tries to apply Merkle update in parallel
+    #[cfg(all(feature = "rayon", feature = "sync"))]
+    pub fn par_apply_trusted<F>(&self, find_cell: F) -> Result<Cell, Error>
+    where
+        for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync + 'static,
+    {
+        self.par_apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
+            .map(|r| r.cell)
+    }
+
+    /// Tries to apply Merkle update in parallel with stats
+    #[cfg(all(feature = "rayon", feature = "sync"))]
+    pub fn par_apply_trusted_with_stats<F>(&self, find_cell: F) -> Result<MerkleApplyResult, Error>
+    where
+        for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync + 'static,
+    {
+        self.par_apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
+    }
+
+    /// Tries to apply Merkle update in parallel with collecting stats
+    #[cfg(all(feature = "rayon", feature = "sync"))]
+    pub fn par_apply_trusted_ext_with_stats<F>(
+        &self,
+        find_cell: F,
+        context: &(dyn CellContext + Send + Sync),
+    ) -> Result<MerkleApplyResult, Error>
+    where
+        for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync + 'static,
+    {
+        if self.old_hash == self.new_hash {
+            let Some(cell) = find_cell(&self.old_hash) else {
+                return Err(Error::InvalidData);
+            };
+            return Ok(MerkleApplyResult {
+                cell,
+                stats: Default::default(),
+            });
+        }
+
+        // Apply changed cells
+        let (new, new_cells_count) = {
+            let applier = ParMerkleUpdateApplier {
+                new_cells: Default::default(),
+                context,
+                find_cell,
+                find_in_new_cells: false,
             };
 
             let new = rayon::scope(|scope| applier.run(self.new.as_ref(), 0, 0, Some(scope)))?;
@@ -942,6 +912,240 @@ impl MerkleUpdate {
         } else {
             Ok(old_cells.into_iter().collect())
         }
+    }
+}
+
+/// A key type for [`MerkleUpdateApplier`].
+pub trait MerkleUpdateApplierKey<'a>: Borrow<HashBytes> + Eq + std::hash::Hash {
+    /// Make key from cell hash.
+    fn from_ref(hash: &'a HashBytes) -> Self;
+}
+
+impl MerkleUpdateApplierKey<'_> for HashBytes {
+    #[inline]
+    fn from_ref(hash: &'_ HashBytes) -> Self {
+        *hash
+    }
+}
+
+impl<'a> MerkleUpdateApplierKey<'a> for &'a HashBytes {
+    #[inline]
+    fn from_ref(hash: &'a HashBytes) -> Self {
+        hash
+    }
+}
+
+/// Stateful applier which rebuilds a `new` cell with existing subtrees.
+pub struct MerkleUpdateApplier<'c, F, K> {
+    /// Rebuilt cells.
+    pub new_cells: ahash::HashMap<K, Cell>,
+    /// Cell builder context.
+    pub context: &'c dyn CellContext,
+    /// How to find an existing cell from the previous tree.
+    pub find_cell: F,
+    /// Whether to reuse new cells if not found in previous tree.
+    pub find_in_new_cells: bool,
+}
+
+impl<'c, F, K> MerkleUpdateApplier<'c, F, K>
+where
+    for<'h> F: FnMut(&'h HashBytes) -> Option<Cell>,
+{
+    /// Rebuilds the specified cell so that all its pruned subtrees
+    /// are replaced with old subtrees.
+    pub fn run<'a>(&mut self, cell: &'a DynCell, merkle_depth: u8) -> Result<Cell, Error>
+    where
+        K: MerkleUpdateApplierKey<'a>,
+    {
+        let descriptor = cell.descriptor();
+        let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
+
+        // Start building a new cell
+        let mut result = CellBuilder::new();
+        result.set_exotic(descriptor.is_exotic());
+
+        // Build all child cells
+        for child_idx in 0..descriptor.reference_count() {
+            let Some(child) = cell.reference(child_idx) else {
+                return Err(Error::CellUnderflow);
+            };
+            let child_descriptor = child.descriptor();
+
+            let child = if child_descriptor.is_pruned_branch() {
+                // Replace pruned branches with old cells
+                let mask = child_descriptor.level_mask();
+                if mask.to_byte() & (1 << child_merkle_depth) != 0 {
+                    // Use original hash for pruned branches
+                    let child_hash = child.hash(mask.level() - 1);
+                    match (self.find_cell)(child_hash) {
+                        Some(cell) => cell,
+                        None => {
+                            if self.find_in_new_cells
+                                && let Some(cell) = self.new_cells.get(child_hash)
+                            {
+                                cell.clone()
+                            } else {
+                                return Err(Error::InvalidData);
+                            }
+                        }
+                    }
+                } else {
+                    match cell.reference_cloned(child_idx) {
+                        Some(child) => child,
+                        None => return Err(Error::CellUnderflow),
+                    }
+                }
+            } else {
+                // Build a child cell if it hasn't been built before
+                let child_hash = child.hash(child_merkle_depth);
+                if let Some(child) = self.new_cells.get(child_hash) {
+                    child.clone()
+                } else {
+                    let child = ok!(self.run(child.as_ref(), child_merkle_depth));
+                    self.new_cells
+                        .insert(K::from_ref(child_hash), child.clone());
+                    child
+                }
+            };
+
+            _ = result.store_reference(child);
+        }
+
+        _ = result.store_cell_data(cell);
+
+        result.build_ext(self.context)
+    }
+}
+
+/// Stateful parallel applier which rebuilds a `new` cell with existing subtrees.
+#[cfg(all(feature = "rayon", feature = "sync"))]
+pub struct ParMerkleUpdateApplier<'c, F> {
+    /// Rebuilt cells.
+    pub new_cells: dashmap::DashMap<HashBytes, ExtCell, ahash::RandomState>,
+    /// Cell builder context.
+    pub context: &'c (dyn CellContext + Send + Sync),
+    /// How to find an existing cell from the previous tree.
+    pub find_cell: F,
+    /// Whether to reuse new cells if not found in previous tree.
+    pub find_in_new_cells: bool,
+}
+
+#[cfg(all(feature = "rayon", feature = "sync"))]
+impl<F> ParMerkleUpdateApplier<'_, F>
+where
+    for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync,
+{
+    // TODO: Replace with a non-recursive impl
+    /// Rebuilds the specified cell so that all its pruned subtrees
+    /// are replaced with old subtrees.
+    pub fn run<'scope>(
+        &'scope self,
+        cell: &DynCell,
+        merkle_depth: u8,
+        traverse_depth: u16,
+        scope: Option<&rayon::Scope<'scope>>,
+    ) -> Result<ExtCell, Error> {
+        let descriptor = cell.descriptor();
+        let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
+
+        // Start building a new cell
+        let mut builder = ChildrenBuilder::Ordinary(Default::default());
+
+        // Build all child cells
+        for child in cell.references().cloned() {
+            let child_descriptor = child.as_ref().descriptor();
+
+            let child = ok!(if child_descriptor.is_pruned_branch() {
+                self.resolve_pruned_branch(child, child_descriptor, child_merkle_depth)
+            } else {
+                self.resolve_subtree(child, child_merkle_depth, traverse_depth, scope)
+            });
+
+            ok!(builder.store_reference(child));
+        }
+
+        // Build the cell
+        match builder {
+            ChildrenBuilder::Ordinary(refs) => {
+                let mut builder = CellBuilder::new();
+                builder.set_exotic(cell.is_exotic());
+                _ = builder.store_cell_data(cell);
+                builder.set_references(refs);
+
+                builder.build_ext(self.context).map(ExtCell::Ordinary)
+            }
+            ChildrenBuilder::Extended(refs) => {
+                let mut builder = CellDataBuilder::new();
+                builder.store_cell_data(cell)?;
+                Ok(ExtCell::Partial(Arc::new(ExtCellParts {
+                    data: builder,
+                    is_exotic: cell.is_exotic(),
+                    refs,
+                })))
+            }
+        }
+    }
+
+    // Replace pruned branches with old cells
+    fn resolve_pruned_branch(
+        &self,
+        cell: Cell,
+        descriptor: CellDescriptor,
+        merkle_depth: u8,
+    ) -> Result<ExtCell, Error> {
+        let mask = descriptor.level_mask();
+        if mask.to_byte() & (1 << merkle_depth) != 0 {
+            // Use original hash for pruned branches
+            let child_hash = cell.as_ref().hash(mask.level() - 1);
+            match (self.find_cell)(child_hash) {
+                Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
+                None => {
+                    if self.find_in_new_cells
+                        && let Some(cell) = self.new_cells.get(child_hash)
+                    {
+                        Ok(cell.clone())
+                    } else {
+                        Err(Error::InvalidData)
+                    }
+                }
+            }
+        } else {
+            Ok(ExtCell::Ordinary(cell))
+        }
+    }
+
+    // Build a child cell if it hasn't been built before
+    fn resolve_subtree<'scope>(
+        &'scope self,
+        cell: Cell,
+        merkle_depth: u8,
+        traverse_depth: u16,
+        scope: Option<&rayon::Scope<'scope>>,
+    ) -> Result<ExtCell, Error> {
+        let hash = cell.as_ref().hash(merkle_depth);
+
+        if let Some(child) = self.new_cells.get(hash) {
+            return Ok(child.clone());
+        }
+
+        if let Some(scope) = scope
+            && traverse_depth > ROOT_SPLIT_DEPTH
+            && cell.repr_depth() > CHILD_SPLIT_DEPTH
+        {
+            let promise = Promise::new();
+            scope.spawn({
+                let promise = promise.clone();
+                move |_| {
+                    let result = self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
+                    promise.set(result);
+                }
+            });
+            return Ok(ExtCell::Deferred(promise));
+        }
+
+        let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
+        self.new_cells.insert(*hash, cell.clone());
+        Ok(cell)
     }
 }
 

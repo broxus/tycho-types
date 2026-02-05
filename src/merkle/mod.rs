@@ -5,16 +5,20 @@ use std::hash::BuildHasher;
 
 pub use self::proof::{MerkleProof, MerkleProofBuilder, MerkleProofExtBuilder, MerkleProofRef};
 pub use self::pruned_branch::make_pruned_branch;
+#[cfg(all(feature = "rayon", feature = "sync"))]
+pub use self::update::ParMerkleUpdateApplier;
 pub use self::update::{
-    MerkleApplyResult, MerkleBuildResult, MerkleStats, MerkleUpdate, MerkleUpdateBuilder,
+    MerkleApplyResult, MerkleBuildResult, MerkleStats, MerkleUpdate, MerkleUpdateApplier,
+    MerkleUpdateApplierKey, MerkleUpdateBuilder,
 };
 use crate::cell::{HashBytes, UsageTree, UsageTreeWithSubtrees};
 
 mod proof;
 mod pruned_branch;
-#[cfg(all(feature = "rayon", feature = "sync"))]
-mod sync_util;
 mod update;
+
+#[cfg(all(feature = "rayon", feature = "sync"))]
+pub mod sync_util;
 
 #[cfg(test)]
 mod tests;
