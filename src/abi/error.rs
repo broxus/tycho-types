@@ -126,7 +126,7 @@ pub enum AbiError {
         /// Id from parsed data.
         id: u32,
     },
-    /// Explicity provided public key cannot be inserted into fields.
+    /// Explicitly provided public key cannot be inserted into fields.
     #[error("explicit pubkey was not used")]
     PubkeyNotUsed,
 }

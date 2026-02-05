@@ -1395,7 +1395,7 @@ where
 /// The following must be true:
 /// - `T1` must have the same memory layout as `T2`.
 unsafe fn cast_vec<T1, T2>(v: Vec<T1>) -> Vec<T2> {
-    // The code is the same as in the offical example:
+    // The code is the same as in the official example:
     // https://doc.rust-lang.org/stable/std/vec/struct.Vec.html#method.from_raw_parts
 
     // Prevent running `self`'s destructor so we are in complete control

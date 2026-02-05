@@ -869,6 +869,7 @@ impl FromStr for PlainAbiType {
         Ok(match s {
             "bool" => Self::Bool,
             "address" => Self::Address,
+            "address_std" => Self::Address,
             s => {
                 if let Some(s) = s.strip_prefix("uint") {
                     Self::Uint(ok!(s

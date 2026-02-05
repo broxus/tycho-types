@@ -51,13 +51,23 @@ pub struct Contract {
     pub getters: HashMap<Arc<str>, Getter>,
 }
 
+/// Contract initialization data representation.
 pub enum ContractInitData {
+    /// Dictionary-based init data for ABI versions < 2.4.
+    ///
+    /// Maps field names to tuples of (key, named type), where the key is used
+    /// for dictionary lookups in the contract storage.
     Dict(HashMap<Arc<str>, (u64, NamedAbiType)>),
+
+    /// Plain fields init data for ABI versions >= 2.4.
+    ///
+    /// Contains a set of field names that represent the initialization data.
+    /// These fields are stored sequentially in the contract data cell.
     PlainFields(HashSet<Arc<str>>),
 }
 
 impl Contract {
-    /// Finds a method declaration with the specfied id.
+    /// Finds a method declaration with the specified id.
     pub fn find_function_by_id(&self, id: u32, input: bool) -> Option<&Function> {
         self.functions
             .values()
@@ -903,7 +913,7 @@ impl<'a> ExternalInput<'_, 'a> {
         Ok(ok!(self.build_input_ext(Some(address))).with_dst(address.clone()))
     }
 
-    /// Builds an exteranl message to the specified address without signature.
+    /// Builds an external message to the specified address without signature.
     ///
     /// Returns an expiration timestamp along with message.
     pub fn build_message_without_signature(
@@ -980,7 +990,7 @@ impl<'a> ExternalInput<'_, 'a> {
             Size { bits: 0, refs: 1 }
         } else {
             let bits = if abi_version >= AbiVersion::V2_3 {
-                // Reserve only for address as it also ensures the the signature will fit
+                // Reserve only for address as it also ensures the signature will fit
                 IntAddr::BITS_MAX
             } else {
                 // Reserve for `Some` non-empty signature
