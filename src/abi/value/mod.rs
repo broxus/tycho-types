@@ -5,13 +5,18 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::Bytes;
 use num_bigint::{BigInt, BigUint};
+use serde::Deserialize;
+use serde::de::DeserializeSeed;
+use serde::ser::{SerializeMap, SerializeSeq};
 
 use super::ty::*;
 use super::{IntoAbi, IntoPlainAbi, WithAbiType, WithPlainAbiType, WithoutName};
 use crate::abi::error::AbiError;
+use crate::boc::Boc;
 use crate::cell::{Cell, CellFamily};
-use crate::models::{AnyAddr, IntAddr, StdAddr};
+use crate::models::{AnyAddr, IntAddr, StdAddr, StdAddrFormat};
 use crate::num::Tokens;
+use crate::util::BigIntExt;
 
 mod de;
 pub(crate) mod ser;
@@ -414,6 +419,27 @@ impl AbiValue {
     {
         Self::Ref(Box::new(value.into_abi()))
     }
+
+    /// Parses [`AbiValue`] from JSON using the provided [`AbiType`].
+    pub fn from_json_str(
+        s: &str,
+        ty: &AbiType,
+    ) -> Result<Self, serde_path_to_error::Error<serde_json::Error>> {
+        let jd = &mut serde_json::Deserializer::from_str(s);
+        let mut track = serde_path_to_error::Track::new();
+        match AbiValueSeed(ty)
+            .deserialize(serde_path_to_error::Deserializer::new(&mut *jd, &mut track))
+        {
+            Ok(value) => {
+                if let Err(e) = jd.end() {
+                    return Err(serde_path_to_error::Error::new(track.path(), e));
+                }
+
+                Ok(value)
+            }
+            Err(e) => Err(serde_path_to_error::Error::new(track.path(), e)),
+        }
+    }
 }
 
 impl AbiType {
@@ -669,5 +695,712 @@ impl std::fmt::Display for DisplayTupleType<'_> {
             ")"
         };
         f.write_str(s)
+    }
+}
+
+impl serde::Serialize for AbiValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use base64::prelude::{BASE64_STANDARD, Engine as _};
+
+        #[repr(transparent)]
+        struct SerdeBytes<'a>(&'a [u8]);
+
+        impl serde::Serialize for SerdeBytes<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                if s.is_human_readable() {
+                    s.serialize_str(&BASE64_STANDARD.encode(self.0))
+                } else {
+                    s.serialize_bytes(self.0)
+                }
+            }
+        }
+
+        #[repr(transparent)]
+        struct SerdeMapKey<'a>(&'a PlainAbiValue);
+
+        impl serde::Serialize for SerdeMapKey<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self.0 {
+                    PlainAbiValue::Uint(_, value) => serializer.collect_str(value),
+                    PlainAbiValue::Int(_, value) => serializer.collect_str(value),
+                    PlainAbiValue::Bool(value) => serializer.collect_str(value),
+                    PlainAbiValue::Address(value) => serializer.collect_str(value),
+                }
+            }
+        }
+
+        match self {
+            AbiValue::Uint(_, value) | AbiValue::VarUint(_, value) => serializer.collect_str(value),
+            AbiValue::Int(_, value) | AbiValue::VarInt(_, value) => serializer.collect_str(value),
+            AbiValue::Bool(value) => serializer.serialize_bool(*value),
+            AbiValue::Cell(cell) => Boc::serialize(cell, serializer),
+            AbiValue::Address(addr) => match addr.as_ref() {
+                AnyAddr::None => serializer.serialize_none(),
+                AnyAddr::Std(addr) => serializer.collect_str(addr),
+                AnyAddr::Ext(_) => serializer.serialize_str("extaddr"), /* TODO: add proper support */
+                AnyAddr::Var(_) => serializer.serialize_str("varaddr"), /* TODO: add proper support */
+            },
+            AbiValue::AddressStd(addr) => match addr {
+                None => serializer.serialize_none(),
+                Some(addr) => serializer.collect_str(addr),
+            },
+            AbiValue::Bytes(bytes) | AbiValue::FixedBytes(bytes) => {
+                SerdeBytes(bytes.as_ref()).serialize(serializer)
+            }
+            AbiValue::String(value) => serializer.serialize_str(value),
+            AbiValue::Token(tokens) => serializer.collect_str(tokens),
+            AbiValue::Tuple(items) => {
+                let mut map = serializer.serialize_map(Some(items.len()))?;
+                for item in items {
+                    map.serialize_entry(item.name.as_ref(), &item.value)?;
+                }
+                map.end()
+            }
+            AbiValue::Array(_, values) | AbiValue::FixedArray(_, values) => {
+                let mut seq = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    seq.serialize_element(value)?;
+                }
+                seq.end()
+            }
+            AbiValue::Map(_, _, items) => {
+                let mut map = serializer.serialize_map(Some(items.len()))?;
+                for (key, value) in items {
+                    map.serialize_entry(&SerdeMapKey(key), value)?;
+                }
+                map.end()
+            }
+            AbiValue::Optional(_, value) => value.serialize(serializer),
+            AbiValue::Ref(value) => value.serialize(serializer),
+        }
+    }
+}
+
+/// A [`DeserializeSeed`] for [`AbiValue`].
+///
+/// Example:
+/// ```
+/// # use serde::de::DeserializeSeed;
+/// # use tycho_types::abi::{AbiType, AbiValue, AbiValueSeed};
+/// let abi_type = AbiType::int(32);
+/// let json = "123";
+/// let value: AbiValue = AbiValueSeed(&abi_type)
+///     .deserialize(&mut serde_json::Deserializer::from_str(json))
+///     .unwrap();
+/// assert_eq!(value, AbiValue::int(32, 123));
+/// ```
+#[repr(transparent)]
+pub struct AbiValueSeed<'a>(pub &'a AbiType);
+
+impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
+    type Value = AbiValue;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        use std::str::FromStr;
+
+        use base64::prelude::{BASE64_STANDARD, Engine as _};
+        use num_traits::{Num, ToPrimitive};
+        use serde::de::{Error, Visitor};
+
+        fn ensure_fits<V: BigIntExt, T: std::fmt::Display, E: Error>(
+            v: &V,
+            ty: T,
+            bits: u16,
+            signed: bool,
+        ) -> Result<(), E> {
+            let value_bits = v.bitsize(signed);
+            if value_bits <= bits {
+                Ok(())
+            } else {
+                Err(Error::custom(format_args!(
+                    "parsed integer doesn't fit into `{ty}`"
+                )))
+            }
+        }
+
+        fn parse_common<T: std::fmt::Display, E: Error>(v: &str, ty: T) -> Result<BigUint, E> {
+            let (v, radix) = if let Some(v) = v.strip_prefix("0x") {
+                (v, 16)
+            } else if let Some(v) = v.strip_prefix("0b") {
+                (v, 2)
+            } else {
+                (v, 10)
+            };
+
+            BigUint::from_str_radix(v, radix)
+                .map_err(|e| E::custom(format_args!("invalid {ty}: {e}")))
+        }
+
+        fn parse_uint<T: std::fmt::Display, E: Error>(
+            v: &str,
+            ty: T,
+            bits: u16,
+        ) -> Result<BigUint, E> {
+            if v.starts_with('-') {
+                return Err(Error::custom(format_args!("expected an unsigned integer")));
+            }
+            let value = parse_common(v, &ty)?;
+            ensure_fits(&value, ty, bits, false)?;
+            Ok(value)
+        }
+
+        fn parse_int<T: std::fmt::Display, E: Error>(
+            v: &str,
+            ty: T,
+            bits: u16,
+        ) -> Result<BigInt, E> {
+            let (v, sign) = if let Some(v) = v.strip_prefix('-') {
+                (v, num_bigint::Sign::Minus)
+            } else {
+                (v, num_bigint::Sign::Plus)
+            };
+
+            let value = BigInt::from_biguint(sign, parse_common(v, &ty)?);
+            ensure_fits(&value, ty, bits, true)?;
+            Ok(value)
+        }
+
+        struct PlainAbiValueSeed(PlainAbiType);
+
+        impl<'de> serde::de::DeserializeSeed<'de> for PlainAbiValueSeed {
+            type Value = PlainAbiValue;
+
+            fn deserialize<D>(self, d: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                d.deserialize_str(PlainAbiValueVisitor(self.0))
+            }
+        }
+
+        struct PlainAbiValueVisitor(PlainAbiType);
+
+        impl<'de> Visitor<'de> for PlainAbiValueVisitor {
+            type Value = PlainAbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                match self.0 {
+                    PlainAbiType::Uint(bits) => {
+                        write!(f, "an {bits}-bit unsigned integer as string")
+                    }
+                    PlainAbiType::Int(bits) => {
+                        write!(f, "a {bits}-bit signed integer as string")
+                    }
+                    PlainAbiType::Address => write!(f, "an address"),
+                    PlainAbiType::Bool => write!(f, "a bool as string"),
+                }
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                match self.0 {
+                    PlainAbiType::Uint(bits) => parse_uint(v, format_args!("uint{bits}"), bits)
+                        .map(|v| PlainAbiValue::Uint(bits, v)),
+                    PlainAbiType::Int(bits) => parse_int(v, format_args!("int{bits}"), bits)
+                        .map(|v| PlainAbiValue::Int(bits, v)),
+                    PlainAbiType::Bool => {
+                        let value = bool::from_str(v)
+                            .map_err(|e| Error::custom(format_args!("invalid bool: {e}")))?;
+                        Ok(PlainAbiValue::Bool(value))
+                    }
+                    PlainAbiType::Address => {
+                        let (addr, _) = StdAddr::from_str_ext(v, StdAddrFormat::any())
+                            .map_err(|e| Error::custom(format_args!("invalid address: {e}")))?;
+                        Ok(PlainAbiValue::Address(Box::new(IntAddr::Std(addr))))
+                    }
+                }
+            }
+        }
+
+        struct UintVisitor<T>(T, u16);
+
+        impl<'de, T: std::fmt::Display> Visitor<'de> for UintVisitor<T> {
+            type Value = BigUint;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "an unsigned integer as string or number")
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                parse_uint(v, self.0, self.1)
+            }
+
+            fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+                let value = BigUint::from(v);
+                ensure_fits(&value, self.0, self.1, false)?;
+                Ok(value)
+            }
+
+            fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+                if v >= 0 {
+                    self.visit_u64(v as u64)
+                } else {
+                    Err(Error::custom("expected an unsigned integer"))
+                }
+            }
+        }
+
+        struct IntVisitor<T>(T, u16);
+
+        impl<'de, T: std::fmt::Display> Visitor<'de> for IntVisitor<T> {
+            type Value = BigInt;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a signed integer as string or number")
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                parse_int(v, self.0, self.1)
+            }
+
+            fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+                let value = BigInt::from(v);
+                ensure_fits(&value, self.0, self.1, true)?;
+                Ok(value)
+            }
+
+            fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+                let value = BigInt::from(v);
+                ensure_fits(&value, self.0, self.1, true)?;
+                Ok(value)
+            }
+        }
+
+        struct AddressVisitor {
+            std_only: bool,
+        }
+
+        impl<'de> Visitor<'de> for AddressVisitor {
+            type Value = AbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                if self.std_only {
+                    write!(f, "an std address as string")
+                } else {
+                    write!(f, "an address as string")
+                }
+            }
+
+            fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
+                Ok(if self.std_only {
+                    AbiValue::AddressStd(None)
+                } else {
+                    AbiValue::Address(Box::new(AnyAddr::None))
+                })
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                deserializer.deserialize_str(self)
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                if self.std_only && matches!(v, "extaddr" | "varaddr") {
+                    return Err(Error::custom("expected an std address"));
+                }
+
+                let (addr, _) = StdAddr::from_str_ext(v, StdAddrFormat::any())
+                    .map_err(|e| Error::custom(format_args!("invalid address: {e}")))?;
+                Ok(if self.std_only {
+                    AbiValue::AddressStd(Some(Box::new(addr)))
+                } else {
+                    AbiValue::Address(Box::new(AnyAddr::Std(addr)))
+                })
+            }
+        }
+
+        struct BytesVisitor(Option<usize>);
+
+        impl BytesVisitor {
+            fn make_value<E: Error>(&self, bytes: Vec<u8>) -> Result<AbiValue, E> {
+                match self.0 {
+                    None => Ok(AbiValue::Bytes(Bytes::from(bytes))),
+                    Some(len) if bytes.len() == len => Ok(AbiValue::FixedBytes(Bytes::from(bytes))),
+                    Some(_) => Err(Error::invalid_length(bytes.len(), self)),
+                }
+            }
+        }
+
+        impl<'de> Visitor<'de> for BytesVisitor {
+            type Value = AbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                match self.0 {
+                    None => write!(f, "base64-encoded bytes"),
+                    Some(n) => write!(f, "base64-encoded {n} bytes"),
+                }
+            }
+
+            fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                self.make_value(v.to_vec())
+            }
+
+            fn visit_byte_buf<E: Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                self.make_value(v)
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                match BASE64_STANDARD.decode(v) {
+                    Ok(value) => self.make_value(value),
+                    Err(e) => Err(E::custom(format_args!(
+                        "failed to deserialize a base64 string: {e}"
+                    ))),
+                }
+            }
+        }
+
+        struct TupleVisitor<'a>(&'a [NamedAbiType]);
+
+        impl<'de> Visitor<'de> for TupleVisitor<'_> {
+            type Value = AbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a tuple with named fields")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut items =
+                    ahash::HashMap::with_capacity_and_hasher(self.0.len(), Default::default());
+                for ty in self.0 {
+                    items.insert(ty.name.as_ref(), (&ty.ty, None));
+                }
+
+                while let Some(key) = map.next_key::<String>()? {
+                    let Some((ty, value)) = items.get_mut(key.as_str()) else {
+                        return Err(Error::custom(format_args!(
+                            "unknown field `{key}` in tuple"
+                        )));
+                    };
+
+                    *value = Some(map.next_value_seed(AbiValueSeed(ty))?);
+                }
+
+                let mut result = Vec::with_capacity(self.0.len());
+                for item in self.0 {
+                    if let Some((_, value)) = items.get_mut(item.name.as_ref())
+                        && let Some(value) = value.take()
+                    {
+                        result.push(NamedAbiValue {
+                            name: item.name.clone(),
+                            value,
+                        });
+                    } else {
+                        return Err(Error::custom(format_args!(
+                            "missing field `{}` in tuple",
+                            item.name.as_ref()
+                        )));
+                    }
+                }
+
+                Ok(AbiValue::Tuple(result))
+            }
+        }
+
+        struct ArrayVisitor<'a>(&'a Arc<AbiType>, Option<usize>);
+
+        impl<'de> Visitor<'de> for ArrayVisitor<'_> {
+            type Value = AbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                match self.1 {
+                    None => write!(f, "an array of values"),
+                    Some(n) => write!(f, "an array of {n} values"),
+                }
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut result = Vec::with_capacity(seq.size_hint().unwrap_or_default());
+                while let Some(value) = seq.next_element_seed(AbiValueSeed(self.0))? {
+                    result.push(value);
+                }
+
+                match self.1 {
+                    None => Ok(AbiValue::Array(self.0.clone(), result)),
+                    Some(len) if result.len() == len => {
+                        Ok(AbiValue::FixedArray(self.0.clone(), result))
+                    }
+                    Some(_) => Err(Error::invalid_length(result.len(), &self)),
+                }
+            }
+        }
+
+        struct MapVisitor<'a>(PlainAbiType, &'a Arc<AbiType>);
+
+        impl<'de> Visitor<'de> for MapVisitor<'_> {
+            type Value = AbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a map")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut result = BTreeMap::new();
+                while let Some(key) = map.next_key_seed(PlainAbiValueSeed(self.0))? {
+                    let value = map.next_value_seed(AbiValueSeed(self.1))?;
+                    result.insert(key, value);
+                }
+                Ok(AbiValue::Map(self.0, self.1.clone(), result))
+            }
+        }
+
+        struct OptionVisitor<'a>(&'a Arc<AbiType>);
+
+        impl<'de> Visitor<'de> for OptionVisitor<'_> {
+            type Value = AbiValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "an optional value")
+            }
+
+            fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
+                Ok(AbiValue::Optional(self.0.clone(), None))
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = AbiValueSeed(self.0.as_ref()).deserialize(deserializer)?;
+                Ok(AbiValue::Optional(self.0.clone(), Some(Box::new(value))))
+            }
+        }
+
+        match self.0 {
+            AbiType::Uint(bits) => {
+                let value = d.deserialize_any(UintVisitor(format_args!("uint{bits}"), *bits))?;
+                Ok(AbiValue::Uint(*bits, value))
+            }
+            AbiType::Int(bits) => {
+                let value = d.deserialize_any(IntVisitor(format_args!("int{bits}"), *bits))?;
+                Ok(AbiValue::Int(*bits, value))
+            }
+            AbiType::VarUint(bytes) => {
+                let bytes = *bytes;
+                let value = d.deserialize_any(UintVisitor(
+                    format_args!("varuint{bytes}"),
+                    bytes.get() as u16 * 8,
+                ))?;
+                Ok(AbiValue::VarUint(bytes, value))
+            }
+            AbiType::VarInt(bytes) => {
+                let bytes = *bytes;
+                let value = d.deserialize_any(IntVisitor(
+                    format_args!("varint{bytes}"),
+                    bytes.get() as u16 * 8,
+                ))?;
+                Ok(AbiValue::VarInt(bytes, value))
+            }
+            AbiType::Bool => bool::deserialize(d).map(AbiValue::Bool),
+            AbiType::Cell => Boc::deserialize(d).map(AbiValue::Cell),
+            AbiType::Address => d.deserialize_option(AddressVisitor { std_only: false }),
+            AbiType::AddressStd => d.deserialize_option(AddressVisitor { std_only: true }),
+            AbiType::Bytes => {
+                if d.is_human_readable() {
+                    d.deserialize_str(BytesVisitor(None))
+                } else {
+                    d.deserialize_byte_buf(BytesVisitor(None))
+                }
+            }
+            AbiType::FixedBytes(len) => {
+                if d.is_human_readable() {
+                    d.deserialize_str(BytesVisitor(Some(*len)))
+                } else {
+                    d.deserialize_byte_buf(BytesVisitor(Some(*len)))
+                }
+            }
+            AbiType::String => String::deserialize(d).map(AbiValue::String),
+            AbiType::Token => {
+                let Some(value) = d.deserialize_any(UintVisitor("tokens", 120))?.to_u128() else {
+                    return Err(Error::custom("tokens integer out of range"));
+                };
+                Ok(AbiValue::Token(Tokens::new(value)))
+            }
+            AbiType::Tuple(items) => d.deserialize_map(TupleVisitor(items)),
+            AbiType::Array(ty) => d.deserialize_seq(ArrayVisitor(ty, None)),
+            AbiType::FixedArray(ty, len) => d.deserialize_seq(ArrayVisitor(ty, Some(*len))),
+            AbiType::Map(key, value) => d.deserialize_map(MapVisitor(*key, value)),
+            AbiType::Optional(ty) => d.deserialize_option(OptionVisitor(ty)),
+            AbiType::Ref(ty) => AbiValueSeed(ty)
+                .deserialize(d)
+                .map(|value| AbiValue::Ref(Box::new(value))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cell::HashBytes;
+
+    #[test]
+    fn to_from_json_works() -> Result<()> {
+        for (value, json) in [
+            // uint
+            (AbiValue::uint(32, 0u32), "0"),
+            (AbiValue::uint(32, 123u32), "123"),
+            (AbiValue::uint(32, 0u32), r#""0""#),
+            (AbiValue::uint(32, 123u32), r#""123""#),
+            (AbiValue::uint(32, 123u32), r#""0x7b""#),
+            (AbiValue::uint(32, 123u32), r#""0b01111011""#),
+            // int (positive)
+            (AbiValue::int(32, 0), "0"),
+            (AbiValue::int(32, 123), "123"),
+            (AbiValue::int(32, 0), r#""0""#),
+            (AbiValue::int(32, 123), r#""123""#),
+            (AbiValue::int(32, 123), r#""0x7b""#),
+            (AbiValue::int(32, 123), r#""0b01111011""#),
+            // int (negative)
+            (AbiValue::int(32, -123), "-123"),
+            (AbiValue::int(32, 0), r#""-0""#),
+            (AbiValue::int(32, -123), r#""-123""#),
+            (AbiValue::int(32, -123), r#""-0x7b""#),
+            (AbiValue::int(32, -123), r#""-0b01111011""#),
+            // varuint
+            (AbiValue::varuint(16, 0u32), "0"),
+            (AbiValue::varuint(16, 123u32), "123"),
+            (AbiValue::varuint(16, 0u32), r#""0""#),
+            (AbiValue::varuint(16, 123u32), r#""123""#),
+            (AbiValue::varuint(16, 123u32), r#""0x7b""#),
+            (AbiValue::varuint(16, 123u32), r#""0b01111011""#),
+            // int (positive)
+            (AbiValue::varint(16, 0), "0"),
+            (AbiValue::varint(16, 123), "123"),
+            (AbiValue::varint(16, 0), r#""0""#),
+            (AbiValue::varint(16, 123), r#""123""#),
+            (AbiValue::varint(16, 123), r#""0x7b""#),
+            (AbiValue::varint(16, 123), r#""0b01111011""#),
+            // int (negative)
+            (AbiValue::varint(16, -123), "-123"),
+            (AbiValue::varint(16, 0), r#""-0""#),
+            (AbiValue::varint(16, -123), r#""-123""#),
+            (AbiValue::varint(16, -123), r#""-0x7b""#),
+            (AbiValue::varint(16, -123), r#""-0b01111011""#),
+            // bool
+            (AbiValue::Bool(false), "false"),
+            (AbiValue::Bool(true), "true"),
+            // cell
+            (
+                AbiValue::Cell(Cell::empty_cell()),
+                "\"te6ccgEBAQEAAgAAAA==\"",
+            ),
+            // address
+            (AbiValue::Address(Box::new(AnyAddr::None)), "null"),
+            (
+                AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(0, HashBytes([0; 32]))))),
+                "\"0:0000000000000000000000000000000000000000000000000000000000000000\"",
+            ),
+            (
+                AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(
+                    -1,
+                    HashBytes([0x33; 32]),
+                )))),
+                "\"Uf8zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMxYA\"",
+            ),
+            // std address
+            (AbiValue::AddressStd(None), "null"),
+            (
+                AbiValue::AddressStd(Some(Box::new(StdAddr::new(0, HashBytes([0; 32]))))),
+                "\"0:0000000000000000000000000000000000000000000000000000000000000000\"",
+            ),
+            (
+                AbiValue::AddressStd(Some(Box::new(StdAddr::new(-1, HashBytes([0x33; 32]))))),
+                "\"Uf8zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMxYA\"",
+            ),
+            // bytes
+            (AbiValue::Bytes(Bytes::new()), "\"\""),
+            (AbiValue::Bytes(Bytes::from(&[0x7bu8] as &[_])), "\"ew==\""),
+            // fixed bytes
+            (AbiValue::FixedBytes(Bytes::new()), "\"\""),
+            (
+                AbiValue::FixedBytes(Bytes::from(&[0x7bu8] as &[_])),
+                "\"ew==\"",
+            ),
+            // string
+            (AbiValue::String(String::new()), "\"\""),
+            (AbiValue::String("hello".to_owned()), "\"hello\""),
+            // token
+            (AbiValue::Token(Tokens::new(0)), "0"),
+            (AbiValue::Token(Tokens::new(123)), "123"),
+            (AbiValue::Token(Tokens::new(0)), r#""0""#),
+            (AbiValue::Token(Tokens::new(123)), r#""123""#),
+            (AbiValue::Token(Tokens::new(123)), r#""0x7b""#),
+            (AbiValue::Token(Tokens::new(123)), r#""0b01111011""#),
+            // tuple
+            (AbiValue::tuple([] as [NamedAbiValue; 0]), "{}"),
+            (
+                AbiValue::tuple([
+                    AbiValue::Bool(false).named("hi"),
+                    AbiValue::String("hello".to_owned()).named("mark"),
+                ]),
+                "{\"mark\":\"hello\",\"hi\":false}",
+            ),
+            // array
+            (AbiValue::array::<bool, _>([]), "[]"),
+            (AbiValue::array([0u32, 123u32]), "[0,\"123\"]"),
+            // fixed array
+            (AbiValue::fixedarray::<bool, _>([]), "[]"),
+            (AbiValue::fixedarray([0u32, 123u32]), "[0,\"123\"]"),
+            // bool map
+            (AbiValue::map(std::iter::empty::<(bool, u32)>()), "{}"),
+            (
+                AbiValue::map([(false, 123), (true, 234)]),
+                "{\"true\":234,\"false\":123}",
+            ),
+            // uint map
+            (AbiValue::map(std::iter::empty::<(u32, u32)>()), "{}"),
+            (
+                AbiValue::map([(10000, 123), (1000, 234)]),
+                "{\"1000\":234,\"10000\":123}",
+            ),
+            // uint map
+            (AbiValue::map(std::iter::empty::<(u32, u32)>()), "{}"),
+            (
+                AbiValue::map([(HashBytes([0; 32]), 123), (HashBytes([0x33; 32]), 234)]),
+                "{\"0x0000000000000000000000000000000000000000000000000000000000000000\":123,\
+                \"0x3333333333333333333333333333333333333333333333333333333333333333\":234}",
+            ),
+            // int map
+            (AbiValue::map(std::iter::empty::<(u32, u32)>()), "{}"),
+            (
+                AbiValue::map([(-1000, 123), (1000, 234)]),
+                "{\"1000\":234,\"-1000\":123}",
+            ),
+            // address map
+            (AbiValue::map(std::iter::empty::<(StdAddr, u32)>()), "{}"),
+            (
+                AbiValue::map([
+                    (StdAddr::new(0, HashBytes::ZERO), 123),
+                    (StdAddr::new(-1, HashBytes([0x33; 32])), 234),
+                ]),
+                "{\"0:0000000000000000000000000000000000000000000000000000000000000000\":123,\
+                \"Uf8zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMxYA\":234}",
+            ),
+            // optional
+            (AbiValue::optional(None::<u32>), "null"),
+            (AbiValue::optional(Some(123u32)), "\"123\""),
+            // ref
+            (AbiValue::reference(AbiValue::uint(32, 123u32)), "\"123\""),
+        ] {
+            let ty = value.get_type();
+            println!("parsing provided `{json}` with {ty:?}");
+            assert_eq!(AbiValue::from_json_str(json, &ty)?, value,);
+
+            let serialized = serde_json::to_string(&value)?;
+            println!("parsing auto `{serialized}` with {ty:?}");
+            let parsed = AbiValue::from_json_str(&serialized, &ty)?;
+            assert_eq!(parsed, value);
+        }
+
+        Ok(())
     }
 }
