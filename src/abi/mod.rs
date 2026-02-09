@@ -17,7 +17,7 @@ pub use self::traits::{
 pub use self::ty::{
     AbiHeaderType, AbiType, AbiTypeFlatten, NamedAbiType, NamedAbiTypeFlatten, PlainAbiType,
 };
-pub use self::value::{AbiHeader, AbiValue, NamedAbiValue, PlainAbiValue};
+pub use self::value::{AbiHeader, AbiValue, AbiValueSeed, NamedAbiValue, PlainAbiValue};
 
 pub mod error;
 

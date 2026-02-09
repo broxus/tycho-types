@@ -474,6 +474,18 @@ impl AbiType {
         }
     }
 
+    /// Simple `uintN` type constructor.
+    #[inline]
+    pub fn uint(size: u16) -> Self {
+        Self::Uint(size)
+    }
+
+    /// Simple `intN` type constructor.
+    #[inline]
+    pub fn int(size: u16) -> Self {
+        Self::Int(size)
+    }
+
     /// Simple `varuintN` type constructor.
     #[inline]
     pub fn varuint(size: u8) -> Self {
