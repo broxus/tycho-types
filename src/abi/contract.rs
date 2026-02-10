@@ -17,8 +17,8 @@ use crate::cell::{
 };
 use crate::dict::RawDict;
 use crate::models::{
-    ExtInMsgInfo, IntAddr, MsgInfo, OwnedMessage, OwnedRelaxedMessage, RelaxedIntMsgInfo,
-    RelaxedMsgInfo, StateInit, StdAddr,
+    SignatureContext, ExtInMsgInfo, IntAddr, MsgInfo, OwnedMessage, OwnedRelaxedMessage,
+    RelaxedIntMsgInfo, RelaxedMsgInfo, StateInit, StdAddr,
 };
 use crate::num::Tokens;
 use crate::prelude::Dict;
@@ -1333,6 +1333,7 @@ impl EventBuilder {
 }
 
 /// Unsigned external message.
+#[derive(Debug, Clone)]
 pub struct UnsignedExternalMessage {
     /// Destination contract address.
     pub dst: StdAddr,
@@ -1364,10 +1365,19 @@ impl UnsignedExternalMessage {
     pub fn sign(
         self,
         key: &ed25519_dalek::SigningKey,
-        signature_id: Option<i32>,
+        context: SignatureContext,
     ) -> Result<OwnedMessage> {
-        let signature =
-            crate::abi::sign_with_signature_id(key, self.body.hash.as_slice(), signature_id);
+        let signature = context.sign(key, self.body.hash.as_slice());
+        self.with_signature(&signature)
+    }
+
+    /// Signs the payload with the specified closure
+    /// and returns an external message with filled signature.
+    pub fn sign_with<F>(self, f: F) -> Result<OwnedMessage>
+    where
+        for<'a> F: FnOnce(&'a HashBytes) -> ed25519_dalek::Signature,
+    {
+        let signature = f(&self.body.hash);
         self.with_signature(&signature)
     }
 
@@ -1416,6 +1426,7 @@ impl UnsignedExternalMessage {
 }
 
 /// Unsigned external message payload.
+#[derive(Debug, Clone)]
 pub struct UnsignedBody {
     /// ABI version used during encoding.
     pub abi_version: AbiVersion,
@@ -1439,8 +1450,22 @@ impl UnsignedBody {
     }
 
     /// Signs the payload and returns a body cell with filled signature.
-    pub fn sign(self, key: &ed25519_dalek::SigningKey, signature_id: Option<i32>) -> Result<Cell> {
-        let signature = crate::abi::sign_with_signature_id(key, self.hash.as_slice(), signature_id);
+    pub fn sign(
+        self,
+        key: &ed25519_dalek::SigningKey,
+        context: SignatureContext,
+    ) -> Result<Cell> {
+        let signature = context.sign(key, self.hash.as_slice());
+        self.with_signature(&signature)
+    }
+
+    /// Signs the payload with the specified closure
+    /// and returns a body cell with filled signature.
+    pub fn sign_with<F>(self, f: F) -> Result<Cell>
+    where
+        for<'a> F: FnOnce(&'a HashBytes) -> ed25519_dalek::Signature,
+    {
+        let signature = f(&self.hash);
         self.with_signature(&signature)
     }
 
