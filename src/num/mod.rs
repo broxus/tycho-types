@@ -341,13 +341,16 @@ macro_rules! impl_var_uints {
             pub const MIN: Self = $ident(0);
 
             /// The largest value that can be represented by this integer type.
-            pub const MAX: Self = $ident(((1 as $inner) << ($max_bytes * 8)) - 1);
+            pub const MAX: Self = $ident(((1 as $inner) << Self::VALUE_BITS) - 1);
 
             /// The number of data bits that the length occupies.
             pub const LEN_BITS: u16 = 8 - ($max_bytes as u8).leading_zeros() as u16;
 
             /// The maximum number of data bits that this struct occupies.
-            pub const MAX_BITS: u16 = Self::LEN_BITS + $max_bytes * 8;
+            pub const MAX_BITS: u16 = Self::LEN_BITS + Self::VALUE_BITS;
+
+            /// The maximum number of bits for the value.
+            pub const VALUE_BITS: u16 = $max_bytes * 8;
 
             /// Creates a new integer value from a primitive integer.
             #[inline]
