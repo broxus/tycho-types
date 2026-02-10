@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::Bytes;
 use num_bigint::{BigInt, BigUint};
+use num_traits::ToPrimitive;
 use serde::Deserialize;
 use serde::de::DeserializeSeed;
 use serde::ser::{SerializeMap, SerializeSeq};
@@ -427,7 +428,7 @@ impl AbiValue {
     ) -> Result<Self, serde_path_to_error::Error<serde_json::Error>> {
         let jd = &mut serde_json::Deserializer::from_str(s);
         let mut track = serde_path_to_error::Track::new();
-        match AbiValueSeed(ty)
+        match (DeserializeAbiValue { ty })
             .deserialize(serde_path_to_error::Deserializer::new(&mut *jd, &mut track))
         {
             Ok(value) => {
@@ -698,8 +699,118 @@ impl std::fmt::Display for DisplayTupleType<'_> {
     }
 }
 
-impl serde::Serialize for AbiValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+/// Serialization params for [`AbiValue`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SerializeAbiValueParams {
+    /// Integer **types** with bit width greater than 128
+    /// will be serialized as hex (with `0x` prefix).
+    ///
+    /// Default: `false`.
+    ///
+    /// See [`SerializeAbiValueParams::NUMBERS_AS_HEX_THRESHOLD`].
+    pub big_numbers_as_hex: bool,
+    /// Integer **values** with bit len not greater than 53
+    /// will be serialized as is (e.g. as JSON numbers).
+    ///
+    /// Default: `false`.
+    ///
+    /// See [`SerializeAbiValueParams::NUMBERS_AS_IS_THRESHOLD`].
+    pub small_numbers_as_is: bool,
+}
+
+impl SerializeAbiValueParams {
+    /// Number of bits after which the number will
+    /// be serialized as hex.
+    pub const NUMBERS_AS_HEX_THRESHOLD: u16 = 128;
+
+    /// Number of bits before which the number will
+    /// be serialized as is (e.g. as JSON number).
+    ///
+    /// See [https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/MAX_SAFE_INTEGER].
+    pub const NUMBERS_AS_IS_THRESHOLD: u16 = 53;
+
+    const _ASSERT: () = const {
+        assert!(SerializeAbiValueParams::NUMBERS_AS_IS_THRESHOLD <= 64);
+    };
+
+    fn serialize_uint<S: serde::Serializer>(
+        &self,
+        value: &BigUint,
+        type_bits: u16,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        if self.big_numbers_as_hex && type_bits > Self::NUMBERS_AS_HEX_THRESHOLD {
+            let hex_len = type_bits.div_ceil(4) as usize;
+            s.collect_str(&format_args!("0x{value:0hex_len$x}"))
+        } else if self.small_numbers_as_is
+            && value.bits() <= Self::NUMBERS_AS_IS_THRESHOLD as u64
+            && let Some(value) = value.to_u64()
+        {
+            s.serialize_u64(value)
+        } else {
+            s.collect_str(value)
+        }
+    }
+
+    fn serialize_int<S: serde::Serializer>(
+        &self,
+        value: &BigInt,
+        type_bits: u16,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        if self.big_numbers_as_hex && type_bits > Self::NUMBERS_AS_HEX_THRESHOLD {
+            let hex_len = type_bits.div_ceil(4) as usize;
+            let uint = value.magnitude();
+            let sign = if value.sign() == num_bigint::Sign::Minus {
+                "-"
+            } else {
+                ""
+            };
+            s.collect_str(&format_args!("{sign}0x{uint:0hex_len$x}"))
+        } else if self.small_numbers_as_is
+            && value.bits() <= Self::NUMBERS_AS_IS_THRESHOLD as u64
+            && let Some(value) = value.to_i64()
+        {
+            s.serialize_i64(value)
+        } else {
+            s.collect_str(value)
+        }
+    }
+
+    fn serialize_tokens<S: serde::Serializer>(
+        &self,
+        value: &Tokens,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        if self.small_numbers_as_is {
+            let inner = 128 - value.into_inner().leading_zeros();
+            if inner <= Self::NUMBERS_AS_IS_THRESHOLD as u32 {
+                return s.serialize_u64(value.into_inner() as u64);
+            }
+        }
+
+        s.collect_str(value)
+    }
+}
+
+/// A [`serde::Serialize`] for [`AbiValue`].
+pub struct SerializeAbiValue<'a> {
+    /// Value to serialize.
+    pub value: &'a AbiValue,
+    /// Serialization params.
+    pub params: SerializeAbiValueParams,
+}
+
+impl<'a> SerializeAbiValue<'a> {
+    /// Creates a serializer.
+    #[inline]
+    pub fn with_params(value: &'a AbiValue, params: SerializeAbiValueParams) -> Self {
+        Self { value, params }
+    }
+}
+
+impl serde::Serialize for SerializeAbiValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use base64::prelude::{BASE64_STANDARD, Engine as _};
 
         #[repr(transparent)]
@@ -715,63 +826,101 @@ impl serde::Serialize for AbiValue {
             }
         }
 
-        #[repr(transparent)]
-        struct SerdeMapKey<'a>(&'a PlainAbiValue);
+        struct SerdeMapKey<'a> {
+            key: &'a PlainAbiValue,
+            big_numbers_as_hex: bool,
+        }
 
         impl serde::Serialize for SerdeMapKey<'_> {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                match self.0 {
-                    PlainAbiValue::Uint(_, value) => serializer.collect_str(value),
-                    PlainAbiValue::Int(_, value) => serializer.collect_str(value),
-                    PlainAbiValue::Bool(value) => serializer.collect_str(value),
-                    PlainAbiValue::Address(value) => serializer.collect_str(value),
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                let params = SerializeAbiValueParams {
+                    big_numbers_as_hex: self.big_numbers_as_hex,
+                    ..Default::default()
+                };
+
+                match self.key {
+                    PlainAbiValue::Uint(bits, value) => params.serialize_uint(value, *bits, s),
+                    PlainAbiValue::Int(bits, value) => params.serialize_int(value, *bits, s),
+                    PlainAbiValue::Bool(value) => s.collect_str(value),
+                    PlainAbiValue::Address(value) => s.collect_str(value),
                 }
             }
         }
 
-        match self {
-            AbiValue::Uint(_, value) | AbiValue::VarUint(_, value) => serializer.collect_str(value),
-            AbiValue::Int(_, value) | AbiValue::VarInt(_, value) => serializer.collect_str(value),
-            AbiValue::Bool(value) => serializer.serialize_bool(*value),
-            AbiValue::Cell(cell) => Boc::serialize(cell, serializer),
+        match self.value {
+            AbiValue::Uint(bits, value) => self.params.serialize_uint(value, *bits, s),
+            AbiValue::Int(bits, value) => self.params.serialize_int(value, *bits, s),
+            AbiValue::VarUint(bytes, value) => {
+                self.params.serialize_uint(value, bytes.get() as u16 * 8, s)
+            }
+            AbiValue::VarInt(bytes, value) => {
+                self.params.serialize_int(value, bytes.get() as u16 * 8, s)
+            }
+            AbiValue::Bool(value) => s.serialize_bool(*value),
+            AbiValue::Cell(cell) => Boc::serialize(cell, s),
             AbiValue::Address(addr) => match addr.as_ref() {
-                AnyAddr::None => serializer.serialize_none(),
-                AnyAddr::Std(addr) => serializer.collect_str(addr),
-                AnyAddr::Ext(_) => serializer.serialize_str("extaddr"), /* TODO: add proper support */
-                AnyAddr::Var(_) => serializer.serialize_str("varaddr"), /* TODO: add proper support */
+                AnyAddr::None => s.serialize_none(),
+                AnyAddr::Std(addr) => s.collect_str(addr),
+                AnyAddr::Ext(_) => s.serialize_str("extaddr"), // TODO: add proper support
+                AnyAddr::Var(_) => s.serialize_str("varaddr"), // TODO: add proper support
             },
             AbiValue::AddressStd(addr) => match addr {
-                None => serializer.serialize_none(),
-                Some(addr) => serializer.collect_str(addr),
+                None => s.serialize_none(),
+                Some(addr) => s.collect_str(addr),
             },
             AbiValue::Bytes(bytes) | AbiValue::FixedBytes(bytes) => {
-                SerdeBytes(bytes.as_ref()).serialize(serializer)
+                SerdeBytes(bytes.as_ref()).serialize(s)
             }
-            AbiValue::String(value) => serializer.serialize_str(value),
-            AbiValue::Token(tokens) => serializer.collect_str(tokens),
+            AbiValue::String(value) => s.serialize_str(value),
+            AbiValue::Token(tokens) => self.params.serialize_tokens(tokens, s),
             AbiValue::Tuple(items) => {
-                let mut map = serializer.serialize_map(Some(items.len()))?;
+                let mut map = s.serialize_map(Some(items.len()))?;
                 for item in items {
-                    map.serialize_entry(item.name.as_ref(), &item.value)?;
+                    map.serialize_entry(item.name.as_ref(), &SerializeAbiValue {
+                        value: &item.value,
+                        params: self.params,
+                    })?;
                 }
                 map.end()
             }
             AbiValue::Array(_, values) | AbiValue::FixedArray(_, values) => {
-                let mut seq = serializer.serialize_seq(Some(values.len()))?;
+                let mut seq = s.serialize_seq(Some(values.len()))?;
                 for value in values {
-                    seq.serialize_element(value)?;
+                    seq.serialize_element(&SerializeAbiValue {
+                        value,
+                        params: self.params,
+                    })?;
                 }
                 seq.end()
             }
             AbiValue::Map(_, _, items) => {
-                let mut map = serializer.serialize_map(Some(items.len()))?;
+                let mut map = s.serialize_map(Some(items.len()))?;
                 for (key, value) in items {
-                    map.serialize_entry(&SerdeMapKey(key), value)?;
+                    map.serialize_entry(
+                        &SerdeMapKey {
+                            key,
+                            big_numbers_as_hex: self.params.big_numbers_as_hex,
+                        },
+                        &SerializeAbiValue {
+                            value,
+                            params: self.params,
+                        },
+                    )?;
                 }
                 map.end()
             }
-            AbiValue::Optional(_, value) => value.serialize(serializer),
-            AbiValue::Ref(value) => value.serialize(serializer),
+            AbiValue::Optional(_, value) => value
+                .as_ref()
+                .map(|value| SerializeAbiValue {
+                    value,
+                    params: self.params,
+                })
+                .serialize(s),
+            AbiValue::Ref(value) => SerializeAbiValue {
+                value,
+                params: self.params,
+            }
+            .serialize(s),
         }
     }
 }
@@ -790,16 +939,19 @@ impl serde::Serialize for AbiValue {
 /// assert_eq!(value, AbiValue::int(32, 123));
 /// ```
 #[repr(transparent)]
-pub struct AbiValueSeed<'a>(pub &'a AbiType);
+pub struct DeserializeAbiValue<'a> {
+    /// Value type description.
+    pub ty: &'a AbiType,
+}
 
-impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
+impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
     type Value = AbiValue;
 
     fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
         use std::str::FromStr;
 
         use base64::prelude::{BASE64_STANDARD, Engine as _};
-        use num_traits::{Num, ToPrimitive};
+        use num_traits::Num;
         use serde::de::{Error, Visitor};
 
         fn ensure_fits<V: BigIntExt, T: std::fmt::Display, E: Error>(
@@ -1076,7 +1228,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
                         )));
                     };
 
-                    *value = Some(map.next_value_seed(AbiValueSeed(ty))?);
+                    *value = Some(map.next_value_seed(DeserializeAbiValue { ty })?);
                 }
 
                 let mut result = Vec::with_capacity(self.0.len());
@@ -1117,7 +1269,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
                 A: serde::de::SeqAccess<'de>,
             {
                 let mut result = Vec::with_capacity(seq.size_hint().unwrap_or_default());
-                while let Some(value) = seq.next_element_seed(AbiValueSeed(self.0))? {
+                while let Some(value) = seq.next_element_seed(DeserializeAbiValue { ty: self.0 })? {
                     result.push(value);
                 }
 
@@ -1146,7 +1298,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
             {
                 let mut result = BTreeMap::new();
                 while let Some(key) = map.next_key_seed(PlainAbiValueSeed(self.0))? {
-                    let value = map.next_value_seed(AbiValueSeed(self.1))?;
+                    let value = map.next_value_seed(DeserializeAbiValue { ty: self.1 })?;
                     result.insert(key, value);
                 }
                 Ok(AbiValue::Map(self.0, self.1.clone(), result))
@@ -1170,12 +1322,15 @@ impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
             where
                 D: serde::Deserializer<'de>,
             {
-                let value = AbiValueSeed(self.0.as_ref()).deserialize(deserializer)?;
+                let value = DeserializeAbiValue {
+                    ty: self.0.as_ref(),
+                }
+                .deserialize(deserializer)?;
                 Ok(AbiValue::Optional(self.0.clone(), Some(Box::new(value))))
             }
         }
 
-        match self.0 {
+        match self.ty {
             AbiType::Uint(bits) => {
                 let value = d.deserialize_any(UintVisitor(format_args!("uint{bits}"), *bits))?;
                 Ok(AbiValue::Uint(*bits, value))
@@ -1220,7 +1375,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
             }
             AbiType::String => String::deserialize(d).map(AbiValue::String),
             AbiType::Token => {
-                let Some(value) = d.deserialize_any(UintVisitor("tokens", 120))?.to_u128() else {
+                let Some(value) = d
+                    .deserialize_any(UintVisitor("tokens", Tokens::VALUE_BITS))?
+                    .to_u128()
+                else {
                     return Err(Error::custom("tokens integer out of range"));
                 };
                 Ok(AbiValue::Token(Tokens::new(value)))
@@ -1230,7 +1388,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for AbiValueSeed<'_> {
             AbiType::FixedArray(ty, len) => d.deserialize_seq(ArrayVisitor(ty, Some(*len))),
             AbiType::Map(key, value) => d.deserialize_map(MapVisitor(*key, value)),
             AbiType::Optional(ty) => d.deserialize_option(OptionVisitor(ty)),
-            AbiType::Ref(ty) => AbiValueSeed(ty)
+            AbiType::Ref(ty) => DeserializeAbiValue { ty }
                 .deserialize(d)
                 .map(|value| AbiValue::Ref(Box::new(value))),
         }
@@ -1251,6 +1409,7 @@ mod tests {
             (AbiValue::uint(32, 0u32), r#""0""#),
             (AbiValue::uint(32, 123u32), r#""123""#),
             (AbiValue::uint(32, 123u32), r#""0x7b""#),
+            (AbiValue::uint(32, 123u32), r#""0x000007b""#),
             (AbiValue::uint(32, 123u32), r#""0b01111011""#),
             // int (positive)
             (AbiValue::int(32, 0), "0"),
@@ -1258,12 +1417,14 @@ mod tests {
             (AbiValue::int(32, 0), r#""0""#),
             (AbiValue::int(32, 123), r#""123""#),
             (AbiValue::int(32, 123), r#""0x7b""#),
+            (AbiValue::int(32, 123), r#""0x000007b""#),
             (AbiValue::int(32, 123), r#""0b01111011""#),
             // int (negative)
             (AbiValue::int(32, -123), "-123"),
             (AbiValue::int(32, 0), r#""-0""#),
             (AbiValue::int(32, -123), r#""-123""#),
             (AbiValue::int(32, -123), r#""-0x7b""#),
+            (AbiValue::int(32, -123), r#""-0x0000007b""#),
             (AbiValue::int(32, -123), r#""-0b01111011""#),
             // varuint
             (AbiValue::varuint(16, 0u32), "0"),
@@ -1395,10 +1556,106 @@ mod tests {
             println!("parsing provided `{json}` with {ty:?}");
             assert_eq!(AbiValue::from_json_str(json, &ty)?, value,);
 
-            let serialized = serde_json::to_string(&value)?;
+            let serialized =
+                serde_json::to_string(&SerializeAbiValue::with_params(&value, Default::default()))?;
             println!("parsing auto `{serialized}` with {ty:?}");
             let parsed = AbiValue::from_json_str(&serialized, &ty)?;
             assert_eq!(parsed, value);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn custom_json_params_works() -> Result<()> {
+        fn check_parsed(value: &AbiValue, json: &str) {
+            let parsed = AbiValue::from_json_str(json, &value.get_type()).unwrap();
+            assert_eq!(value, &parsed);
+        }
+
+        //
+
+        let params = SerializeAbiValueParams {
+            big_numbers_as_hex: true,
+            ..Default::default()
+        };
+
+        let value = AbiValue::map([(HashBytes([0; 32]), ()), (HashBytes([0x33; 32]), ())]);
+        let json = serde_json::to_string(&SerializeAbiValue::with_params(&value, params))?;
+        assert_eq!(
+            json,
+            "{\"0x0000000000000000000000000000000000000000000000000000000000000000\":{},\
+            \"0x3333333333333333333333333333333333333333333333333333333333333333\":{}}"
+        );
+        check_parsed(&value, &json);
+
+        //
+
+        let params = SerializeAbiValueParams {
+            small_numbers_as_is: true,
+            ..Default::default()
+        };
+
+        let max_uint = (1u64 << SerializeAbiValueParams::NUMBERS_AS_IS_THRESHOLD) - 1;
+
+        for (value, json) in [
+            // uint
+            (AbiValue::uint(256, 123u32), "123".to_owned()),
+            (AbiValue::uint(256, max_uint), format!("{max_uint}")),
+            (
+                AbiValue::uint(256, max_uint + 1),
+                format!("\"{}\"", max_uint + 1),
+            ),
+            (AbiValue::uint(256, u64::MAX), format!("\"{}\"", u64::MAX)),
+            // int
+            (AbiValue::int(64, 123), "123".to_owned()),
+            (AbiValue::int(256, max_uint), format!("{max_uint}")),
+            (
+                AbiValue::int(256, -(max_uint as i64)),
+                format!("-{max_uint}"),
+            ),
+            (
+                AbiValue::int(256, -((max_uint + 1) as i64)),
+                format!("\"-{}\"", max_uint + 1),
+            ),
+            (AbiValue::int(256, i64::MAX), format!("\"{}\"", i64::MAX)),
+            (AbiValue::int(256, i64::MIN), format!("\"{}\"", i64::MIN)),
+            // varuint
+            (AbiValue::varuint(16, 123u32), "123".to_owned()),
+            (AbiValue::varuint(16, max_uint), format!("{max_uint}")),
+            (
+                AbiValue::varuint(16, max_uint + 1),
+                format!("\"{}\"", max_uint + 1),
+            ),
+            (AbiValue::varuint(16, u64::MAX), format!("\"{}\"", u64::MAX)),
+            // varint
+            (AbiValue::varint(16, 123), "123".to_owned()),
+            (AbiValue::varint(16, max_uint), format!("{max_uint}")),
+            (
+                AbiValue::varint(16, -(max_uint as i64)),
+                format!("-{max_uint}"),
+            ),
+            (
+                AbiValue::varint(16, -((max_uint + 1) as i64)),
+                format!("\"-{}\"", max_uint + 1),
+            ),
+            (AbiValue::varint(16, i64::MAX), format!("\"{}\"", i64::MAX)),
+            (AbiValue::varint(16, i64::MIN), format!("\"{}\"", i64::MIN)),
+            // tokens
+            (AbiValue::Token(Tokens::new(123)), "123".to_owned()),
+            (
+                AbiValue::Token(Tokens::new(max_uint as _)),
+                format!("{max_uint}"),
+            ),
+            (
+                AbiValue::Token(Tokens::new(max_uint as u128 + 1)),
+                format!("\"{}\"", max_uint + 1),
+            ),
+        ] {
+            let serialized =
+                serde_json::to_string(&SerializeAbiValue::with_params(&value, params))?;
+            assert_eq!(serialized, json);
+            check_parsed(&value, &json);
         }
 
         Ok(())
