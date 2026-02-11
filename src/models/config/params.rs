@@ -5,7 +5,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use tycho_crypto::ed25519;
 
 use crate::cell::*;
-use crate::dict::Dict;
+use crate::dict::{Dict, build_dict_from_sorted_iter};
 use crate::error::Error;
 use crate::models::block::ShardIdent;
 use crate::models::{CurrencyCollection, Signature};
@@ -1345,11 +1345,13 @@ impl Store for ValidatorSet {
             return Err(Error::IntOverflow);
         };
 
-        // TODO: optimize
-        let mut validators = Dict::<u16, ValidatorDescription>::new();
-        for (i, item) in self.list.iter().enumerate() {
-            ok!(validators.set_ext(i as u16, item, context));
-        }
+        let validators = build_dict_from_sorted_iter(
+            self.list
+                .iter()
+                .enumerate()
+                .map(|(i, item)| (i as u16, item)),
+            context,
+        )?;
 
         ok!(builder.store_u8(Self::TAG_V2));
         ok!(builder.store_u32(self.utime_since));
