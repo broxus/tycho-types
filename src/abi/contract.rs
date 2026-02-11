@@ -17,8 +17,8 @@ use crate::cell::{
 };
 use crate::dict::RawDict;
 use crate::models::{
-    SignatureContext, ExtInMsgInfo, IntAddr, MsgInfo, OwnedMessage, OwnedRelaxedMessage,
-    RelaxedIntMsgInfo, RelaxedMsgInfo, StateInit, StdAddr,
+    ExtInMsgInfo, IntAddr, MsgInfo, OwnedMessage, OwnedRelaxedMessage, RelaxedIntMsgInfo,
+    RelaxedMsgInfo, SignatureContext, StateInit, StdAddr,
 };
 use crate::num::Tokens;
 use crate::prelude::Dict;
@@ -1450,11 +1450,7 @@ impl UnsignedBody {
     }
 
     /// Signs the payload and returns a body cell with filled signature.
-    pub fn sign(
-        self,
-        key: &ed25519_dalek::SigningKey,
-        context: SignatureContext,
-    ) -> Result<Cell> {
+    pub fn sign(self, key: &ed25519_dalek::SigningKey, context: SignatureContext) -> Result<Cell> {
         let signature = context.sign(key, self.hash.as_slice());
         self.with_signature(&signature)
     }
