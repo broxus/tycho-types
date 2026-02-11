@@ -818,15 +818,22 @@ impl serde::Serialize for SerializeAbiValue<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use base64::prelude::{BASE64_STANDARD, Engine as _};
 
-        #[repr(transparent)]
-        struct SerdeBytes<'a>(&'a [u8]);
+        struct SerdeBytes<'a> {
+            bytes: &'a [u8],
+            fixed: bool,
+        }
 
         impl serde::Serialize for SerdeBytes<'_> {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
                 if s.is_human_readable() {
-                    s.serialize_str(&BASE64_STANDARD.encode(self.0))
+                    let string = if self.fixed {
+                        hex::encode(self.bytes)
+                    } else {
+                        BASE64_STANDARD.encode(self.bytes)
+                    };
+                    s.serialize_str(&string)
                 } else {
-                    s.serialize_bytes(self.0)
+                    s.serialize_bytes(self.bytes)
                 }
             }
         }
@@ -874,9 +881,12 @@ impl serde::Serialize for SerializeAbiValue<'_> {
                 None => s.serialize_none(),
                 Some(addr) => s.collect_str(addr),
             },
-            AbiValue::Bytes(bytes) | AbiValue::FixedBytes(bytes) => {
-                SerdeBytes(bytes.as_ref()).serialize(s)
+            AbiValue::Bytes(bytes) => SerdeBytes {
+                bytes,
+                fixed: false,
             }
+            .serialize(s),
+            AbiValue::FixedBytes(bytes) => SerdeBytes { bytes, fixed: true }.serialize(s),
             AbiValue::String(value) => s.serialize_str(value),
             AbiValue::Token(tokens) => self.params.serialize_tokens(tokens, s),
             AbiValue::Tuple(items) => {
@@ -1203,8 +1213,8 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 match self.0 {
-                    None => write!(f, "base64-encoded bytes"),
-                    Some(n) => write!(f, "base64-encoded {n} bytes"),
+                    None => write!(f, "base64-encoded bytes as string"),
+                    Some(n) => write!(f, "hex-encoded {n} bytes as string"),
                 }
             }
 
@@ -1217,12 +1227,18 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
             }
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-                match BASE64_STANDARD.decode(v) {
-                    Ok(value) => self.make_value(value),
-                    Err(e) => Err(E::custom(format_args!(
-                        "failed to deserialize a base64 string: {e}"
-                    ))),
-                }
+                let value = match self.0 {
+                    // `bytes` are parsed as a base64 string
+                    None => BASE64_STANDARD.decode(v).map_err(|e| {
+                        E::custom(format_args!("failed to deserialize a base64 string: {e}"))
+                    })?,
+                    // `fixedbytes` are parsed as a hex string
+                    Some(_) => hex::decode(v).map_err(|e| {
+                        E::custom(format_args!("failed to deserialize a hex string: {e}"))
+                    })?,
+                };
+
+                self.make_value(value)
             }
         }
 
@@ -1509,7 +1525,7 @@ mod tests {
             (AbiValue::FixedBytes(Bytes::new()), "\"\""),
             (
                 AbiValue::FixedBytes(Bytes::from(&[0x7bu8] as &[_])),
-                "\"ew==\"",
+                "\"7b\"",
             ),
             // string
             (AbiValue::String(String::new()), "\"\""),
