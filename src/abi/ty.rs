@@ -348,6 +348,7 @@ impl AbiType {
             Self::Int(n) => PlainAbiType::Int(*n),
             Self::Bool => PlainAbiType::Bool,
             Self::Address => PlainAbiType::Address,
+            Self::FixedBytes(n) => PlainAbiType::FixedBytes(*n),
             _ => return None,
         })
     }
@@ -833,6 +834,8 @@ pub enum PlainAbiType {
     ///
     /// [`IntAddr`]: crate::models::message::IntAddr
     Address,
+    /// Byte array of fixed length.
+    FixedBytes(usize),
 }
 
 impl PlainAbiType {
@@ -842,6 +845,7 @@ impl PlainAbiType {
             Self::Uint(n) | Self::Int(n) => *n,
             Self::Bool => 1,
             Self::Address => StdAddr::BITS_WITHOUT_ANYCAST,
+            Self::FixedBytes(bytes) => u16::try_from(bytes.saturating_mul(8)).unwrap_or(u16::MAX),
         }
     }
 }
@@ -853,6 +857,7 @@ impl From<PlainAbiType> for AbiType {
             PlainAbiType::Int(n) => Self::Int(n),
             PlainAbiType::Bool => Self::Bool,
             PlainAbiType::Address => Self::Address,
+            PlainAbiType::FixedBytes(bytes) => Self::FixedBytes(bytes),
         }
     }
 }
@@ -873,6 +878,10 @@ impl FromStr for PlainAbiType {
                     Self::Int(ok!(s
                         .parse::<u16>()
                         .map_err(ParseAbiTypeError::InvalidBitLen)))
+                } else if let Some(s) = s.strip_prefix("fixedbytes") {
+                    Self::FixedBytes(ok!(s
+                        .parse::<usize>()
+                        .map_err(ParseAbiTypeError::InvalidByteLen)))
                 } else {
                     return Err(ParseAbiTypeError::UnknownType);
                 }
@@ -888,6 +897,7 @@ impl std::fmt::Display for PlainAbiType {
             Self::Int(n) => return write!(f, "int{n}"),
             Self::Bool => "bool",
             Self::Address => "address",
+            Self::FixedBytes(bytes) => return write!(f, "fixedbytes{bytes}"),
         };
         f.write_str(s)
     }
@@ -985,6 +995,10 @@ mod tests {
                 AbiType::fixedarray(AbiType::Address, 123)
             ),
             "map(uint123,address[123])"
+        );
+        assert_eq_sig!(
+            AbiType::map(PlainAbiType::FixedBytes(32), AbiType::Bool),
+            "map(fixedbytes32,bool)"
         );
 
         assert_eq_sig!(AbiType::optional(AbiType::Address), "optional(address)");

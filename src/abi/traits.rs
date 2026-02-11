@@ -382,6 +382,12 @@ impl_with_plain_abi_type! {
     VarAddr => Address,
 }
 
+impl<const N: usize> WithPlainAbiType for [u8; N] {
+    fn plain_abi_type() -> PlainAbiType {
+        PlainAbiType::FixedBytes(N)
+    }
+}
+
 /// A type which can be converted into a plain ABI value.
 pub trait IntoPlainAbi: IntoAbi {
     /// Returns a corresponding plain ABI value.
@@ -498,6 +504,34 @@ impl_into_plain_abi! {
         PlainAbiValue::Address(Box::new(v.clone().into())),
         PlainAbiValue::Address(Box::new(v.into())),
     },
+
+    Vec<u8> => |v| {
+        PlainAbiValue::FixedBytes(v.clone().into()),
+        PlainAbiValue::FixedBytes(v.into())
+    },
+    Bytes => |v| {
+        PlainAbiValue::FixedBytes(v.clone()),
+        PlainAbiValue::FixedBytes(v)
+    }
+}
+
+impl<const N: usize> IntoPlainAbi for [u8; N] {
+    fn as_plain_abi(&self) -> PlainAbiValue {
+        PlainAbiValue::FixedBytes(self.to_vec().into())
+    }
+
+    fn into_plain_abi(self) -> PlainAbiValue
+    where
+        Self: Sized,
+    {
+        PlainAbiValue::FixedBytes(self.to_vec().into())
+    }
+}
+
+impl IntoPlainAbi for [u8] {
+    fn as_plain_abi(&self) -> PlainAbiValue {
+        PlainAbiValue::FixedBytes(self.to_vec().into())
+    }
 }
 
 /// A type which can be converted into an ABI value.
@@ -1028,6 +1062,9 @@ impl FromPlainAbi for HashBytes {
 
                 Ok(result)
             }
+            PlainAbiValue::FixedBytes(bytes) if bytes.len() == 32 => {
+                Ok(HashBytes::from_slice(bytes))
+            }
             value => Err(expected_plain_type("uint256", value)),
         }
     }
@@ -1047,6 +1084,15 @@ impl FromAbi for Bytes {
         match value {
             AbiValue::Bytes(bytes) | AbiValue::FixedBytes(bytes) => Ok(bytes),
             value => Err(expected_type("bytes or fixedbytes", &value)),
+        }
+    }
+}
+
+impl FromPlainAbi for Bytes {
+    fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
+        match value {
+            PlainAbiValue::FixedBytes(bytes) => Ok(bytes),
+            value => Err(expected_plain_type("fixedbytes", &value)),
         }
     }
 }
@@ -1180,6 +1226,38 @@ impl<T: FromAbi> FromAbi for Vec<T> {
                 result.push(ok!(T::from_abi(item)));
             }
             Ok(result)
+        }
+    }
+}
+
+impl FromPlainAbi for Vec<u8> {
+    fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
+        match value {
+            PlainAbiValue::FixedBytes(bytes) => Ok(bytes.to_vec()),
+            value => Err(expected_plain_type("fixedbytes", &value)),
+        }
+    }
+}
+
+impl<const N: usize> FromPlainAbi for [u8; N] {
+    fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
+        match value {
+            PlainAbiValue::Uint(n, value) if N * 8 == n as usize => {
+                let mut res = value.to_bytes_le();
+                res.resize(N, 0);
+                res.reverse();
+                Ok(Self::try_from(res).expect("length must match due to resize"))
+            }
+            PlainAbiValue::FixedBytes(bytes) => match Self::try_from(bytes.as_ref()) {
+                Ok(res) => Ok(res),
+                Err(_) => Err(anyhow::Error::from(
+                    crate::abi::error::AbiError::ArraySizeMismatch {
+                        expected: N,
+                        len: bytes.len(),
+                    },
+                )),
+            },
+            value => Err(expected_plain_type("fixedbytes", &value)),
         }
     }
 }

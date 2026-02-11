@@ -536,6 +536,8 @@ pub enum PlainAbiValue {
     ///
     /// [`IntAddr`]: crate::models::message::IntAddr
     Address(Box<IntAddr>),
+    /// Byte array of fixed length.
+    FixedBytes(Bytes),
 }
 
 impl PlainAbiValue {
@@ -545,6 +547,7 @@ impl PlainAbiValue {
             (Self::Uint(n, _), PlainAbiType::Uint(t)) => n == t,
             (Self::Int(n, _), PlainAbiType::Int(t)) => n == t,
             (Self::Bool(_), PlainAbiType::Bool) | (Self::Address(_), PlainAbiType::Address) => true,
+            (Self::FixedBytes(bytes), PlainAbiType::FixedBytes(n)) => bytes.len() == *n,
             _ => false,
         }
     }
@@ -569,6 +572,7 @@ impl From<PlainAbiValue> for AbiValue {
                 };
                 AbiValue::Address(Box::new(addr))
             }
+            PlainAbiValue::FixedBytes(bytes) => AbiValue::FixedBytes(bytes),
         }
     }
 }
@@ -623,6 +627,7 @@ impl std::fmt::Display for DisplayPlainValueType<'_> {
             PlainAbiValue::Int(n, _) => return write!(f, "int{n}"),
             PlainAbiValue::Bool(_) => "bool",
             PlainAbiValue::Address(_) => "address",
+            PlainAbiValue::FixedBytes(bytes) => return write!(f, "fixedbytes{}", bytes.len()),
         })
     }
 }
@@ -843,6 +848,7 @@ impl serde::Serialize for SerializeAbiValue<'_> {
                     PlainAbiValue::Int(bits, value) => params.serialize_int(value, *bits, s),
                     PlainAbiValue::Bool(value) => s.collect_str(value),
                     PlainAbiValue::Address(value) => s.collect_str(value),
+                    PlainAbiValue::FixedBytes(bytes) => s.serialize_str(&hex::encode(bytes)),
                 }
             }
         }
@@ -1040,6 +1046,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
                     }
                     PlainAbiType::Address => write!(f, "an address"),
                     PlainAbiType::Bool => write!(f, "a bool as string"),
+                    PlainAbiType::FixedBytes(n) => write!(f, "hex-encoded {n} bytes as string"),
                 }
             }
 
@@ -1058,6 +1065,23 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
                         let (addr, _) = StdAddr::from_str_ext(v, StdAddrFormat::any())
                             .map_err(|e| Error::custom(format_args!("invalid address: {e}")))?;
                         Ok(PlainAbiValue::Address(Box::new(IntAddr::Std(addr))))
+                    }
+                    PlainAbiType::FixedBytes(n) => {
+                        let Some(str_len) = n.checked_mul(2) else {
+                            return Err(Error::custom(format_args!(
+                                "{n} bytes cannot be parsed as a hex string"
+                            )));
+                        };
+                        if v.len() != str_len {
+                            return Err(Error::custom(format_args!(
+                                "invalid string length {}, expected {str_len}",
+                                v.len(),
+                            )));
+                        }
+
+                        let value = hex::decode(v).map_err(Error::custom)?;
+                        debug_assert_eq!(value.len(), n);
+                        Ok(PlainAbiValue::FixedBytes(value.into()))
                     }
                 }
             }
@@ -1398,6 +1422,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abi::AbiVersion;
     use crate::cell::HashBytes;
 
     #[test]
@@ -1546,6 +1571,12 @@ mod tests {
                 "{\"0:0000000000000000000000000000000000000000000000000000000000000000\":123,\
                 \"Uf8zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMxYA\":234}",
             ),
+            // fixedbytes map
+            (
+                AbiValue::map([([0x33u8; 32], 123), ([0x55; 32], 234)]),
+                "{\"3333333333333333333333333333333333333333333333333333333333333333\":123,\
+                \"5555555555555555555555555555555555555555555555555555555555555555\": 234}",
+            ),
             // optional
             (AbiValue::optional(None::<u32>), "null"),
             (AbiValue::optional(Some(123u32)), "\"123\""),
@@ -1657,6 +1688,37 @@ mod tests {
             assert_eq!(serialized, json);
             check_parsed(&value, &json);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_bytes_as_map_key() -> Result<()> {
+        let map = AbiValue::map([([0x33u8; 32], 123), ([0x55; 32], 234)]);
+        let serialized = map.make_cell(AbiVersion::V2_7)?;
+        let parsed = AbiValue::load(
+            &map.get_type(),
+            AbiVersion::V2_7,
+            &mut serialized.as_slice()?,
+        )?;
+        assert_eq!(map, parsed);
+
+        let map_as_uints = AbiValue::Map(
+            PlainAbiType::Uint(256),
+            Arc::new(AbiType::Int(32)),
+            BTreeMap::from_iter([
+                (
+                    PlainAbiValue::Uint(256, BigUint::from_bytes_be(&[0x33; 32])),
+                    AbiValue::int(32, 123),
+                ),
+                (
+                    PlainAbiValue::Uint(256, BigUint::from_bytes_be(&[0x55; 32])),
+                    AbiValue::int(32, 234),
+                ),
+            ]),
+        );
+        let serialized_as_uints = map_as_uints.make_cell(AbiVersion::V2_7)?;
+        assert_eq!(serialized, serialized_as_uints);
 
         Ok(())
     }

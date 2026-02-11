@@ -791,6 +791,15 @@ impl Store for PlainAbiValue {
             Self::Int(bits, value) => builder.store_bigint(value, *bits, true),
             Self::Bool(bit) => builder.store_bit(*bit),
             Self::Address(address) => address.store_into(builder, f),
+            Self::FixedBytes(bytes) => {
+                if let Some(bits) = bytes.len().checked_mul(8)
+                    && let Ok(bits) = u16::try_from(bits)
+                {
+                    builder.store_raw(bytes.as_ref(), bits)
+                } else {
+                    Err(Error::IntOverflow)
+                }
+            }
         }
     }
 }

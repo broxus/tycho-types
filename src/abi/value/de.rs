@@ -254,6 +254,14 @@ impl PlainAbiValue {
             }
             PlainAbiType::Bool => slice.load_bit().map(Self::Bool),
             PlainAbiType::Address => IntAddr::load_from(slice).map(Box::new).map(Self::Address),
+            PlainAbiType::FixedBytes(bytes) => {
+                let Ok(bits) = u16::try_from(bytes.saturating_mul(8)) else {
+                    return Err(Error::IntOverflow);
+                };
+                let mut buffer = [0u8; 128];
+                let res = slice.load_raw(&mut buffer, bits)?;
+                Ok(Self::FixedBytes(Bytes::from(res.to_vec())))
+            }
         }
     }
 }
