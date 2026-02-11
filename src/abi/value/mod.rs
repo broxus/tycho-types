@@ -930,10 +930,10 @@ impl serde::Serialize for SerializeAbiValue<'_> {
 /// Example:
 /// ```
 /// # use serde::de::DeserializeSeed;
-/// # use tycho_types::abi::{AbiType, AbiValue, AbiValueSeed};
+/// # use tycho_types::abi::{AbiType, AbiValue, DeserializeAbiValue};
 /// let abi_type = AbiType::int(32);
 /// let json = "123";
-/// let value: AbiValue = AbiValueSeed(&abi_type)
+/// let value: AbiValue = DeserializeAbiValue { ty: &abi_type }
 ///     .deserialize(&mut serde_json::Deserializer::from_str(json))
 ///     .unwrap();
 /// assert_eq!(value, AbiValue::int(32, 123));
