@@ -19,8 +19,8 @@ pub use self::ty::{
     AbiHeaderType, AbiType, AbiTypeFlatten, NamedAbiType, NamedAbiTypeFlatten, PlainAbiType,
 };
 pub use self::value::{
-    AbiHeader, AbiValue, DeserializeAbiValue, NamedAbiValue, PlainAbiValue, SerializeAbiValue,
-    SerializeAbiValueParams,
+    AbiHeader, AbiValue, DeserializeAbiValue, DeserializeAbiValues, NamedAbiValue, PlainAbiValue,
+    SerializeAbiValue, SerializeAbiValueParams, SerializeAbiValues,
 };
 
 pub mod error;

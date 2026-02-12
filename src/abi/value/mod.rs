@@ -70,6 +70,28 @@ impl NamedAbiValue {
         anyhow::ensure!(self.value.has_type(ty), type_mismatch(self, ty));
         Ok(())
     }
+
+    /// Parses a tuple of [`NamedAbiValue`] from JSON using the provided [`NamedAbiType`]s.
+    pub fn tuple_from_json_str(
+        s: &str,
+        types: &[NamedAbiType],
+    ) -> Result<Vec<Self>, serde_path_to_error::Error<serde_json::Error>> {
+        let jd = &mut serde_json::Deserializer::from_str(s);
+        let mut track = serde_path_to_error::Track::new();
+        match (DeserializeAbiValues { types })
+            .deserialize(serde_path_to_error::Deserializer::new(&mut *jd, &mut track))
+        {
+            Ok(values) => {
+                if let Err(e) = jd.end() {
+                    return Err(serde_path_to_error::Error::new(track.path(), e));
+                }
+
+                debug_assert_eq!(values.len(), types.len());
+                Ok(values)
+            }
+            Err(e) => Err(serde_path_to_error::Error::new(track.path(), e)),
+        }
+    }
 }
 
 impl From<(String, AbiValue)> for NamedAbiValue {
@@ -798,6 +820,35 @@ impl SerializeAbiValueParams {
     }
 }
 
+/// A [`serde::Serialize`] for a tuple of [`NamedAbiValue`].
+pub struct SerializeAbiValues<'a> {
+    /// A tuple of values.
+    pub values: &'a [NamedAbiValue],
+    /// Serialization params.
+    pub params: SerializeAbiValueParams,
+}
+
+impl<'a> SerializeAbiValues<'a> {
+    /// Creates a serializer.
+    #[inline]
+    pub fn with_params(values: &'a [NamedAbiValue], params: SerializeAbiValueParams) -> Self {
+        Self { values, params }
+    }
+}
+
+impl serde::Serialize for SerializeAbiValues<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(self.values.len()))?;
+        for item in self.values {
+            map.serialize_entry(item.name.as_ref(), &SerializeAbiValue {
+                value: &item.value,
+                params: self.params,
+            })?;
+        }
+        map.end()
+    }
+}
+
 /// A [`serde::Serialize`] for [`AbiValue`].
 pub struct SerializeAbiValue<'a> {
     /// Value to serialize.
@@ -889,16 +940,11 @@ impl serde::Serialize for SerializeAbiValue<'_> {
             AbiValue::FixedBytes(bytes) => SerdeBytes { bytes, fixed: true }.serialize(s),
             AbiValue::String(value) => s.serialize_str(value),
             AbiValue::Token(tokens) => self.params.serialize_tokens(tokens, s),
-            AbiValue::Tuple(items) => {
-                let mut map = s.serialize_map(Some(items.len()))?;
-                for item in items {
-                    map.serialize_entry(item.name.as_ref(), &SerializeAbiValue {
-                        value: &item.value,
-                        params: self.params,
-                    })?;
-                }
-                map.end()
+            AbiValue::Tuple(values) => SerializeAbiValues {
+                values,
+                params: self.params,
             }
+            .serialize(s),
             AbiValue::Array(_, values) | AbiValue::FixedArray(_, values) => {
                 let mut seq = s.serialize_seq(Some(values.len()))?;
                 for value in values {
@@ -938,6 +984,72 @@ impl serde::Serialize for SerializeAbiValue<'_> {
             }
             .serialize(s),
         }
+    }
+}
+
+/// A [`DeserializeSeed`] for a tuple of [`NamedAbiValue`].
+pub struct DeserializeAbiValues<'a> {
+    /// Types of tuple items.
+    pub types: &'a [NamedAbiType],
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValues<'_> {
+    type Value = Vec<NamedAbiValue>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        use serde::de::{Error, Visitor};
+
+        struct TupleVisitor<'a>(&'a [NamedAbiType]);
+
+        impl<'de> Visitor<'de> for TupleVisitor<'_> {
+            type Value = Vec<NamedAbiValue>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a tuple with named fields")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut items =
+                    ahash::HashMap::with_capacity_and_hasher(self.0.len(), Default::default());
+                for ty in self.0 {
+                    items.insert(ty.name.as_ref(), (&ty.ty, None));
+                }
+
+                while let Some(key) = map.next_key::<String>()? {
+                    let Some((ty, value)) = items.get_mut(key.as_str()) else {
+                        return Err(Error::custom(format_args!(
+                            "unknown field `{key}` in tuple"
+                        )));
+                    };
+
+                    *value = Some(map.next_value_seed(DeserializeAbiValue { ty })?);
+                }
+
+                let mut result = Vec::with_capacity(self.0.len());
+                for item in self.0 {
+                    if let Some((_, value)) = items.get_mut(item.name.as_ref())
+                        && let Some(value) = value.take()
+                    {
+                        result.push(NamedAbiValue {
+                            name: item.name.clone(),
+                            value,
+                        });
+                    } else {
+                        return Err(Error::custom(format_args!(
+                            "missing field `{}` in tuple",
+                            item.name.as_ref()
+                        )));
+                    }
+                }
+
+                Ok(result)
+            }
+        }
+
+        d.deserialize_map(TupleVisitor(self.types))
     }
 }
 
@@ -1253,56 +1365,6 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
             }
         }
 
-        struct TupleVisitor<'a>(&'a [NamedAbiType]);
-
-        impl<'de> Visitor<'de> for TupleVisitor<'_> {
-            type Value = AbiValue;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "a tuple with named fields")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut items =
-                    ahash::HashMap::with_capacity_and_hasher(self.0.len(), Default::default());
-                for ty in self.0 {
-                    items.insert(ty.name.as_ref(), (&ty.ty, None));
-                }
-
-                while let Some(key) = map.next_key::<String>()? {
-                    let Some((ty, value)) = items.get_mut(key.as_str()) else {
-                        return Err(Error::custom(format_args!(
-                            "unknown field `{key}` in tuple"
-                        )));
-                    };
-
-                    *value = Some(map.next_value_seed(DeserializeAbiValue { ty })?);
-                }
-
-                let mut result = Vec::with_capacity(self.0.len());
-                for item in self.0 {
-                    if let Some((_, value)) = items.get_mut(item.name.as_ref())
-                        && let Some(value) = value.take()
-                    {
-                        result.push(NamedAbiValue {
-                            name: item.name.clone(),
-                            value,
-                        });
-                    } else {
-                        return Err(Error::custom(format_args!(
-                            "missing field `{}` in tuple",
-                            item.name.as_ref()
-                        )));
-                    }
-                }
-
-                Ok(AbiValue::Tuple(result))
-            }
-        }
-
         struct ArrayVisitor<'a>(&'a Arc<AbiType>, Option<usize>);
 
         impl<'de> Visitor<'de> for ArrayVisitor<'_> {
@@ -1434,7 +1496,9 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
                 };
                 Ok(AbiValue::Token(Tokens::new(value)))
             }
-            AbiType::Tuple(items) => d.deserialize_map(TupleVisitor(items)),
+            AbiType::Tuple(types) => DeserializeAbiValues { types }
+                .deserialize(d)
+                .map(AbiValue::Tuple),
             AbiType::Array(ty) => d.deserialize_seq(ArrayVisitor(ty, None)),
             AbiType::FixedArray(ty, len) => d.deserialize_seq(ArrayVisitor(ty, Some(*len))),
             AbiType::Map(key, value) => d.deserialize_map(MapVisitor(*key, value)),
@@ -1757,6 +1821,19 @@ mod tests {
         let serialized_as_uints = map_as_uints.make_cell(AbiVersion::V2_7)?;
         assert_eq!(serialized, serialized_as_uints);
 
+        Ok(())
+    }
+
+    #[test]
+    fn tuple_tu_from_json() -> Result<()> {
+        let json = "{\"a\":\"123\",\"b\":false}";
+        let types = [AbiType::int(32).named("a"), AbiType::Bool.named("b")];
+        let parsed = NamedAbiValue::tuple_from_json_str(json, &types)?;
+        let serialized = serde_json::to_string(&SerializeAbiValues {
+            values: &parsed,
+            params: Default::default(),
+        })?;
+        assert_eq!(serialized, json);
         Ok(())
     }
 }
