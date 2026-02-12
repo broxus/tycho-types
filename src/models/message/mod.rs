@@ -1219,7 +1219,10 @@ fn load_ext_addr(slice: &mut CellSlice<'_>) -> Result<Option<ExtAddr>, Error> {
 
     let mut data = vec![0; data_bit_len.into_inner().div_ceil(8) as usize];
     ok!(slice.load_raw(&mut data, data_bit_len.into_inner()));
-    Ok(Some(ExtAddr { data_bit_len, data }))
+    Ok(Some(ExtAddr {
+        data_bit_len,
+        data: data.into_boxed_slice(),
+    }))
 }
 
 const fn compute_opt_int_addr_bit_len(addr: &Option<IntAddr>) -> u16 {

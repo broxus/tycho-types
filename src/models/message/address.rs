@@ -981,12 +981,12 @@ impl<'a> arbitrary::Arbitrary<'a> for VarAddr {
 /// addr_none$00 = MsgAddressExt;
 /// addr_extern$01 len:(## 9) external_address:(bits len) = MsgAddressExt;
 /// ```
-#[derive(Debug, Default, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Default, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ExtAddr {
     /// Number of bits stored in data.
     pub data_bit_len: Uint9,
     /// External address data
-    pub data: Vec<u8>,
+    pub data: Box<[u8]>,
 }
 
 impl ExtAddr {
@@ -997,9 +997,31 @@ impl ExtAddr {
     {
         let data_bit_len = Uint9::new(data_bit_len);
         if data_bit_len.is_valid() {
+            let mut data = data.into();
+
+            // Normalize data size.
+            let bits = data_bit_len.into_inner() as usize;
+            let bytes = bits.div_ceil(8);
+            if let Some(additional) = bytes.checked_sub(data.len())
+                && additional > 0
+            {
+                // Use `_exact` here to avoid realloc during the final `into_boxed_slice`.
+                data.reserve_exact(additional);
+            }
+            data.resize(bytes, 0);
+
+            // Normalize the trailing bit (remove it).
+            let rem = bits % 8;
+            if rem > 0 {
+                debug_assert!(bytes > 0, "non-zero bits cannot fit into zero bytes");
+                let tag_mask = 1u8 << (7 - rem);
+                let data_mask = !(tag_mask - 1) << 1;
+                data[bytes - 1] &= data_mask;
+            }
+
             Some(Self {
                 data_bit_len,
-                data: data.into(),
+                data: data.into_boxed_slice(),
             })
         } else {
             None
@@ -1019,6 +1041,13 @@ impl std::fmt::Display for ExtAddr {
             bit_len: self.data_bit_len.into_inner(),
         };
         write!(f, ":{bitstring}")
+    }
+}
+
+impl std::fmt::Debug for ExtAddr {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -1097,7 +1126,10 @@ impl<'a> arbitrary::Arbitrary<'a> for ExtAddr {
             }
         }
 
-        Ok(Self { data_bit_len, data })
+        Ok(Self {
+            data_bit_len,
+            data: data.into_boxed_slice(),
+        })
     }
 
     #[inline]
@@ -1348,5 +1380,13 @@ mod tests {
                 bounceable: true,
             })
         );
+    }
+
+    #[test]
+    fn ext_addr_works() {
+        for bits in 0..=32 {
+            let addr = ExtAddr::new(bits, vec![0xaau8; 2]).unwrap();
+            println!("{addr}");
+        }
     }
 }

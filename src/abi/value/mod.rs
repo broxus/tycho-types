@@ -15,7 +15,7 @@ use super::{IntoAbi, IntoPlainAbi, WithAbiType, WithPlainAbiType, WithoutName};
 use crate::abi::error::AbiError;
 use crate::boc::Boc;
 use crate::cell::{Cell, CellFamily};
-use crate::models::{AnyAddr, IntAddr, StdAddr, StdAddrFormat};
+use crate::models::{AnyAddr, ExtAddr, IntAddr, StdAddr, StdAddrFormat};
 use crate::num::Tokens;
 use crate::util::BigIntExt;
 
@@ -874,7 +874,7 @@ impl serde::Serialize for SerializeAbiValue<'_> {
             AbiValue::Address(addr) => match addr.as_ref() {
                 AnyAddr::None => s.serialize_none(),
                 AnyAddr::Std(addr) => s.collect_str(addr),
-                AnyAddr::Ext(_) => s.serialize_str("extaddr"), // TODO: add proper support
+                AnyAddr::Ext(addr) => s.collect_str(addr),
                 AnyAddr::Var(_) => s.serialize_str("varaddr"), // TODO: add proper support
             },
             AbiValue::AddressStd(addr) => match addr {
@@ -1182,8 +1182,15 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
             }
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
-                if self.std_only && matches!(v, "extaddr" | "varaddr") {
+                let is_extaddr = v.starts_with(':');
+                if self.std_only && (is_extaddr || v == "varaddr") {
                     return Err(Error::custom("expected an std address"));
+                }
+
+                if is_extaddr {
+                    let addr = ExtAddr::from_str(v)
+                        .map_err(|e| Error::custom(format_args!("invalid address: {e}")))?;
+                    return Ok(AbiValue::Address(Box::new(AnyAddr::Ext(addr))));
                 }
 
                 let (addr, _) = StdAddr::from_str_ext(v, StdAddrFormat::any())
@@ -1507,6 +1514,14 @@ mod tests {
                     HashBytes([0x33; 32]),
                 )))),
                 "\"Uf8zMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMxYA\"",
+            ),
+            (
+                AbiValue::Address(Box::new(AnyAddr::Ext(ExtAddr::new(0, []).unwrap()))),
+                "\":\"",
+            ),
+            (
+                AbiValue::Address(Box::new(AnyAddr::Ext(ExtAddr::new(5, vec![0x84]).unwrap()))),
+                "\":84_\"",
             ),
             // std address
             (AbiValue::AddressStd(None), "null"),
