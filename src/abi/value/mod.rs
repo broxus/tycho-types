@@ -872,13 +872,13 @@ impl serde::Serialize for SerializeAbiValue<'_> {
             AbiValue::Bool(value) => s.serialize_bool(*value),
             AbiValue::Cell(cell) => Boc::serialize(cell, s),
             AbiValue::Address(addr) => match addr.as_ref() {
-                AnyAddr::None => s.serialize_none(),
+                AnyAddr::None => s.serialize_str(""),
                 AnyAddr::Std(addr) => s.collect_str(addr),
                 AnyAddr::Ext(addr) => s.collect_str(addr),
                 AnyAddr::Var(_) => s.serialize_str("varaddr"), // TODO: add proper support
             },
             AbiValue::AddressStd(addr) => match addr {
-                None => s.serialize_none(),
+                None => s.serialize_str(""),
                 Some(addr) => s.collect_str(addr),
             },
             AbiValue::Bytes(bytes) => SerdeBytes {
@@ -1182,6 +1182,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for DeserializeAbiValue<'_> {
             }
 
             fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.is_empty() {
+                    return self.visit_none();
+                }
+
                 let is_extaddr = v.starts_with(':');
                 if self.std_only && (is_extaddr || v == "varaddr") {
                     return Err(Error::custom("expected an std address"));
@@ -1504,6 +1508,7 @@ mod tests {
             ),
             // address
             (AbiValue::Address(Box::new(AnyAddr::None)), "null"),
+            (AbiValue::Address(Box::new(AnyAddr::None)), "\"\""),
             (
                 AbiValue::Address(Box::new(AnyAddr::Std(StdAddr::new(0, HashBytes([0; 32]))))),
                 "\"0:0000000000000000000000000000000000000000000000000000000000000000\"",
@@ -1525,6 +1530,7 @@ mod tests {
             ),
             // std address
             (AbiValue::AddressStd(None), "null"),
+            (AbiValue::AddressStd(None), "\"\""),
             (
                 AbiValue::AddressStd(Some(Box::new(StdAddr::new(0, HashBytes([0; 32]))))),
                 "\"0:0000000000000000000000000000000000000000000000000000000000000000\"",
