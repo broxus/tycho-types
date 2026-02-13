@@ -8,7 +8,7 @@ pub use self::pruned_branch::make_pruned_branch;
 #[cfg(all(feature = "rayon", feature = "sync"))]
 pub use self::update::ParMerkleUpdateApplier;
 pub use self::update::{
-    MerkleApplyResult, MerkleBuildResult, MerkleStats, MerkleUpdate, MerkleUpdateApplier,
+    FindCell, MerkleApplyResult, MerkleBuildResult, MerkleStats, MerkleUpdate, MerkleUpdateApplier,
     MerkleUpdateApplierKey, MerkleUpdateBuilder,
 };
 use crate::cell::{HashBytes, UsageTree, UsageTreeWithSubtrees};

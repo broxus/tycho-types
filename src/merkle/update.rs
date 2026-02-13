@@ -250,10 +250,7 @@ impl MerkleUpdate {
     /// Applies new cell using the specified method to find an existing one.
     ///
     /// Must only be used for trusted merkle updates.
-    pub fn apply_trusted<F>(&self, find_cell: F) -> Result<Cell, Error>
-    where
-        for<'a> F: FnMut(&'a HashBytes) -> Option<Cell>,
-    {
+    pub fn apply_trusted<F: FindCell>(&self, find_cell: F) -> Result<Cell, Error> {
         self.apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
             .map(|r| r.cell)
     }
@@ -261,26 +258,23 @@ impl MerkleUpdate {
     /// Applies new cell using the specified method to find an existing one.
     ///
     /// Must only be used for trusted merkle updates.
-    pub fn apply_trusted_with_stats<F>(&self, find_cell: F) -> Result<MerkleApplyResult, Error>
-    where
-        for<'a> F: FnMut(&'a HashBytes) -> Option<Cell>,
-    {
+    pub fn apply_trusted_with_stats<F: FindCell>(
+        &self,
+        find_cell: F,
+    ) -> Result<MerkleApplyResult, Error> {
         self.apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
     }
 
     /// Applies new cell using the specified method to find an existing one.
     ///
     /// Must only be used for trusted merkle updates.
-    pub fn apply_trusted_ext_with_stats<F>(
+    pub fn apply_trusted_ext_with_stats<F: FindCell>(
         &self,
-        mut find_cell: F,
+        find_cell: F,
         context: &dyn CellContext,
-    ) -> Result<MerkleApplyResult, Error>
-    where
-        for<'a> F: FnMut(&'a HashBytes) -> Option<Cell>,
-    {
+    ) -> Result<MerkleApplyResult, Error> {
         if self.old_hash == self.new_hash {
-            let Some(cell) = find_cell(&self.old_hash) else {
+            let Some(cell) = find_cell.find_cell(&self.old_hash) else {
                 return Err(Error::InvalidData);
             };
             return Ok(MerkleApplyResult {
@@ -480,7 +474,7 @@ impl MerkleUpdate {
     #[cfg(all(feature = "rayon", feature = "sync"))]
     pub fn par_apply_trusted<F>(&self, find_cell: F) -> Result<Cell, Error>
     where
-        for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync + 'static,
+        F: FindCell + Send + Sync + 'static,
     {
         self.par_apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
             .map(|r| r.cell)
@@ -490,7 +484,7 @@ impl MerkleUpdate {
     #[cfg(all(feature = "rayon", feature = "sync"))]
     pub fn par_apply_trusted_with_stats<F>(&self, find_cell: F) -> Result<MerkleApplyResult, Error>
     where
-        for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync + 'static,
+        F: FindCell + Send + Sync + 'static,
     {
         self.par_apply_trusted_ext_with_stats(find_cell, Cell::empty_context())
     }
@@ -503,10 +497,10 @@ impl MerkleUpdate {
         context: &(dyn CellContext + Send + Sync),
     ) -> Result<MerkleApplyResult, Error>
     where
-        for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync + 'static,
+        F: FindCell + Send + Sync + 'static,
     {
         if self.old_hash == self.new_hash {
-            let Some(cell) = find_cell(&self.old_hash) else {
+            let Some(cell) = find_cell.find_cell(&self.old_hash) else {
                 return Err(Error::InvalidData);
             };
             return Ok(MerkleApplyResult {
@@ -935,6 +929,22 @@ impl<'a> MerkleUpdateApplierKey<'a> for &'a HashBytes {
     }
 }
 
+/// Some storage that can provide cells by their repr hash.
+pub trait FindCell {
+    /// Find cell by its repr hash.
+    fn find_cell(&self, hash: &HashBytes) -> Option<Cell>;
+}
+
+impl<F> FindCell for F
+where
+    for<'a> F: Fn(&'a HashBytes) -> Option<Cell>,
+{
+    #[inline]
+    fn find_cell(&self, hash: &HashBytes) -> Option<Cell> {
+        (self)(hash)
+    }
+}
+
 /// Stateful applier which rebuilds a `new` cell with existing subtrees.
 pub struct MerkleUpdateApplier<'c, F, K> {
     /// Rebuilt cells.
@@ -947,10 +957,7 @@ pub struct MerkleUpdateApplier<'c, F, K> {
     pub find_in_new_cells: bool,
 }
 
-impl<'c, F, K> MerkleUpdateApplier<'c, F, K>
-where
-    for<'h> F: FnMut(&'h HashBytes) -> Option<Cell>,
-{
+impl<'c, F: FindCell, K> MerkleUpdateApplier<'c, F, K> {
     /// Rebuilds the specified cell so that all its pruned subtrees
     /// are replaced with old subtrees.
     pub fn run<'a>(&mut self, cell: &'a DynCell, merkle_depth: u8) -> Result<Cell, Error>
@@ -977,7 +984,7 @@ where
                 if mask.to_byte() & (1 << child_merkle_depth) != 0 {
                     // Use original hash for pruned branches
                     let child_hash = child.hash(mask.level() - 1);
-                    match (self.find_cell)(child_hash) {
+                    match self.find_cell.find_cell(child_hash) {
                         Some(cell) => cell,
                         None => {
                             if self.find_in_new_cells
@@ -1031,10 +1038,7 @@ pub struct ParMerkleUpdateApplier<'c, F> {
 }
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
-impl<F> ParMerkleUpdateApplier<'_, F>
-where
-    for<'a> F: Fn(&'a HashBytes) -> Option<Cell> + Send + Sync,
-{
+impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
     // TODO: Replace with a non-recursive impl
     /// Rebuilds the specified cell so that all its pruned subtrees
     /// are replaced with old subtrees.
@@ -1097,7 +1101,7 @@ where
         if mask.to_byte() & (1 << merkle_depth) != 0 {
             // Use original hash for pruned branches
             let child_hash = cell.as_ref().hash(mask.level() - 1);
-            match (self.find_cell)(child_hash) {
+            match self.find_cell.find_cell(child_hash) {
                 Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
                 None => {
                     if self.find_in_new_cells
