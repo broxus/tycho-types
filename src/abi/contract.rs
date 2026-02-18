@@ -734,7 +734,6 @@ impl Function {
             time: None,
             expire_at: None,
             pubkey: None,
-            address: None,
         }
     }
 
@@ -904,7 +903,6 @@ pub struct ExternalInput<'f, 'a> {
     time: Option<u64>,
     expire_at: Option<u32>,
     pubkey: Option<&'a ed25519_dalek::VerifyingKey>,
-    address: Option<&'a StdAddr>,
 }
 
 impl<'a> ExternalInput<'_, 'a> {
@@ -933,8 +931,11 @@ impl<'a> ExternalInput<'_, 'a> {
     }
 
     /// Builds an external message body.
-    pub fn build_input(&self) -> Result<UnsignedBody> {
-        self.build_input_ext(self.address)
+    ///
+    /// For contracts with ABI >= 2.3, the address must be provided.
+    /// Otherwise the method will fail with [`AbiError::AddressNotProvided`] error.
+    pub fn build_input(&self, address: Option<&StdAddr>) -> Result<UnsignedBody> {
+        self.build_input_ext(address)
     }
 
     fn build_input_ext(&self, address: Option<&StdAddr>) -> Result<UnsignedBody> {
@@ -1077,19 +1078,6 @@ impl<'a> ExternalInput<'_, 'a> {
     #[inline]
     pub fn with_pubkey(mut self, pubkey: &'a ed25519_dalek::VerifyingKey) -> Self {
         self.set_pubkey(pubkey);
-        self
-    }
-
-    /// Use the specified address for ABIv2.3 signature.
-    #[inline]
-    pub fn set_address(&mut self, address: &'a StdAddr) {
-        self.address = Some(address);
-    }
-
-    /// Use the specified address for ABIv2.3 signature.
-    #[inline]
-    pub fn with_address(mut self, address: &'a StdAddr) -> Self {
-        self.set_address(address);
         self
     }
 }

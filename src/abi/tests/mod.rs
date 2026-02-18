@@ -293,7 +293,7 @@ fn encode_external_input() {
         ])
         .with_time(10000)
         .with_expire_at(10)
-        .build_input()
+        .build_input(None)
         .unwrap()
         .with_fake_signature()
         .unwrap();
