@@ -1349,7 +1349,13 @@ impl UnsignedExternalMessage {
 
     /// Returns an external message with the specified state init.
     pub fn with_state_init(mut self, init: StateInit) -> Self {
-        self.set_state_init(Some(init));
+        self.init = Some(init);
+        self
+    }
+
+    /// Returns an external message with the specified state init.
+    pub fn with_state_init_opt(mut self, init: Option<StateInit>) -> Self {
+        self.init = init;
         self
     }
 
