@@ -834,6 +834,10 @@ pub enum PlainAbiType {
     ///
     /// [`IntAddr`]: crate::models::message::IntAddr
     Address,
+    /// Internal address ([`IntAddr`]).
+    ///
+    /// [`IntAddr`]: crate::models::message::IntAddr
+    AddressStd,
     /// Byte array of fixed length.
     FixedBytes(usize),
 }
@@ -844,7 +848,7 @@ impl PlainAbiType {
         match self {
             Self::Uint(n) | Self::Int(n) => *n,
             Self::Bool => 1,
-            Self::Address => StdAddr::BITS_WITHOUT_ANYCAST,
+            Self::Address | Self::AddressStd => StdAddr::BITS_WITHOUT_ANYCAST,
             Self::FixedBytes(bytes) => u16::try_from(bytes.saturating_mul(8)).unwrap_or(u16::MAX),
         }
     }
@@ -857,6 +861,7 @@ impl From<PlainAbiType> for AbiType {
             PlainAbiType::Int(n) => Self::Int(n),
             PlainAbiType::Bool => Self::Bool,
             PlainAbiType::Address => Self::Address,
+            PlainAbiType::AddressStd => Self::AddressStd,
             PlainAbiType::FixedBytes(bytes) => Self::FixedBytes(bytes),
         }
     }
@@ -869,7 +874,7 @@ impl FromStr for PlainAbiType {
         Ok(match s {
             "bool" => Self::Bool,
             "address" => Self::Address,
-            "address_std" => Self::Address,
+            "address_std" => Self::AddressStd,
             s => {
                 if let Some(s) = s.strip_prefix("uint") {
                     Self::Uint(ok!(s
@@ -898,6 +903,7 @@ impl std::fmt::Display for PlainAbiType {
             Self::Int(n) => return write!(f, "int{n}"),
             Self::Bool => "bool",
             Self::Address => "address",
+            Self::AddressStd => "address_std",
             Self::FixedBytes(bytes) => return write!(f, "fixedbytes{bytes}"),
         };
         f.write_str(s)
@@ -1037,6 +1043,11 @@ mod tests {
                 )),
             ])),
             "(bool,uint123,map(address,(uint32,string))[])[]"
+        );
+
+        assert_eq_sig!(
+            AbiType::map(PlainAbiType::AddressStd, AbiType::Uint(32)),
+            "map(address_std,uint32)"
         );
     }
 

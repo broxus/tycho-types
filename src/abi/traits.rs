@@ -1138,6 +1138,7 @@ impl FromPlainAbi for IntAddr {
     fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
         match value {
             PlainAbiValue::Address(address) => Ok(*address),
+            PlainAbiValue::AddressStd(address) => Ok(IntAddr::Std(*address)),
             value => Err(expected_plain_type("address", &value)),
         }
     }
@@ -1163,11 +1164,16 @@ impl FromAbi for StdAddr {
 
 impl FromPlainAbi for StdAddr {
     fn from_plain_abi(value: PlainAbiValue) -> Result<Self> {
-        if let PlainAbiValue::Address(address) = &value
-            && let IntAddr::Std(address) = address.as_ref()
-        {
-            return Ok(address.clone());
+        match &value {
+            PlainAbiValue::Address(address) => {
+                if let IntAddr::Std(address) = address.as_ref() {
+                    return Ok(address.clone());
+                }
+            }
+            PlainAbiValue::AddressStd(address) => return Ok(address.as_ref().clone()),
+            _ => {}
         }
+
         Err(expected_plain_type("std address", &value))
     }
 }
