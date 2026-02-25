@@ -1136,15 +1136,24 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
             && traverse_depth > ROOT_SPLIT_DEPTH
             && cell.repr_depth() > CHILD_SPLIT_DEPTH
         {
-            let promise = Promise::new();
-            scope.spawn({
-                let promise = promise.clone();
-                move |_| {
-                    let result = self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
-                    promise.set(result);
+            let cell = match self.new_cells.entry(*hash) {
+                dashmap::Entry::Occupied(entry) => entry.get().clone(),
+                dashmap::Entry::Vacant(entry) => {
+                    let promise = Promise::new();
+                    scope.spawn({
+                        let promise = promise.clone();
+                        move |_| {
+                            let result =
+                                self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, None);
+                            promise.set(result);
+                        }
+                    });
+                    let cell = ExtCell::Deferred(promise);
+                    entry.insert(cell.clone());
+                    cell
                 }
-            });
-            return Ok(ExtCell::Deferred(promise));
+            };
+            return Ok(cell);
         }
 
         let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
