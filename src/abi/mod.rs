@@ -6,8 +6,8 @@ use std::str::FromStr;
 pub use tycho_types_abi_proc::{FromAbi, IntoAbi, WithAbiType};
 
 pub use self::contract::{
-    Contract, ContractInitData, Event, EventBuilder, ExternalInput, Function, FunctionBuilder, UnsignedBody,
-    UnsignedExternalMessage,
+    Contract, ContractInitData, Event, EventBuilder, ExternalInput, Function, FunctionBuilder,
+    UnsignedBody, UnsignedExternalMessage,
 };
 #[allow(deprecated)]
 pub use self::signature::{extend_signature_with_id, sign_with_signature_id};

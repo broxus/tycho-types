@@ -13,7 +13,7 @@ use crate::abi::{
 use crate::cell::{Cell, CellSlice, Load, MAX_BIT_LEN, MAX_REF_COUNT};
 use crate::dict::{self, RawDict};
 use crate::error::Error;
-use crate::models::{AnyAddr, IntAddr};
+use crate::models::{AnyAddr, IntAddr, StdAddr};
 use crate::num::Tokens;
 
 impl NamedAbiValue {
@@ -254,6 +254,9 @@ impl PlainAbiValue {
             }
             PlainAbiType::Bool => slice.load_bit().map(Self::Bool),
             PlainAbiType::Address => IntAddr::load_from(slice).map(Box::new).map(Self::Address),
+            PlainAbiType::AddressStd => StdAddr::load_from(slice)
+                .map(Box::new)
+                .map(Self::AddressStd),
             PlainAbiType::FixedBytes(bytes) => {
                 let Ok(bits) = u16::try_from(bytes.saturating_mul(8)) else {
                     return Err(Error::IntOverflow);
