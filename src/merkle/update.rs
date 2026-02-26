@@ -1,6 +1,8 @@
 use std::borrow::Borrow;
 #[cfg(all(feature = "rayon", feature = "sync"))]
 use std::sync::Arc;
+#[cfg(all(feature = "rayon", feature = "sync"))]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(all(feature = "rayon", feature = "sync"))]
 use super::sync_util::{ChildrenBuilder, ExtCell, ExtCellParts, Promise};
@@ -446,6 +448,7 @@ impl MerkleUpdate {
         let (new, new_cells_count) = {
             let applier = ParMerkleUpdateApplier::<_> {
                 new_cells: Default::default(),
+                total_new_cells: Default::default(),
                 context,
                 find_cell: move |hash: &HashBytes| old_cells.get(hash).map(|c| c.clone()),
                 find_in_new_cells: false,
@@ -455,7 +458,10 @@ impl MerkleUpdate {
             let cell = new.resolve(context)?;
 
             // Note: +1 for root
-            let count = applier.new_cells.len() + 1;
+            let count = applier
+                .total_new_cells
+                .load(Ordering::Relaxed)
+                .saturating_add(1);
 
             (cell, count)
         };
@@ -513,6 +519,7 @@ impl MerkleUpdate {
         let (new, new_cells_count) = {
             let applier = ParMerkleUpdateApplier {
                 new_cells: Default::default(),
+                total_new_cells: Default::default(),
                 context,
                 find_cell,
                 find_in_new_cells: false,
@@ -522,7 +529,10 @@ impl MerkleUpdate {
             let cell = new.resolve(context)?;
 
             // Note: +1 for root
-            let count = applier.new_cells.len() + 1;
+            let count = applier
+                .total_new_cells
+                .load(Ordering::Relaxed)
+                .saturating_add(1);
 
             (cell, count)
         };
@@ -722,8 +732,6 @@ impl MerkleUpdate {
         &'a self,
         split_at: &'s ahash::HashSet<HashBytes>,
     ) -> Result<ahash::HashSet<&'a HashBytes>, Error> {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         fn traverse_old_cells<'a, 's>(
             cell: &'a DynCell,
             mut merkle_depth: u8,
@@ -1029,6 +1037,8 @@ impl<'c, F: FindCell, K> MerkleUpdateApplier<'c, F, K> {
 pub struct ParMerkleUpdateApplier<'c, F> {
     /// Rebuilt cells.
     pub new_cells: dashmap::DashMap<HashBytes, ExtCell, ahash::RandomState>,
+    /// Total number of new cells.
+    pub total_new_cells: AtomicUsize,
     /// Cell builder context.
     pub context: &'c (dyn CellContext + Send + Sync),
     /// How to find an existing cell from the previous tree.
@@ -1049,6 +1059,21 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
         traverse_depth: u16,
         scope: Option<&rayon::Scope<'scope>>,
     ) -> Result<ExtCell, Error> {
+        let mut scope_total = 0;
+        let res = self.run_inner(cell, merkle_depth, traverse_depth, &mut scope_total, scope);
+        self.total_new_cells
+            .fetch_add(scope_total, Ordering::Relaxed);
+        res
+    }
+
+    fn run_inner<'scope>(
+        &'scope self,
+        cell: &DynCell,
+        merkle_depth: u8,
+        traverse_depth: u16,
+        scope_total: &mut usize,
+        scope: Option<&rayon::Scope<'scope>>,
+    ) -> Result<ExtCell, Error> {
         let descriptor = cell.descriptor();
         let child_merkle_depth = merkle_depth + descriptor.cell_type().is_merkle() as u8;
 
@@ -1062,7 +1087,13 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
             let child = ok!(if child_descriptor.is_pruned_branch() {
                 self.resolve_pruned_branch(child, child_descriptor, child_merkle_depth)
             } else {
-                self.resolve_subtree(child, child_merkle_depth, traverse_depth, scope)
+                self.resolve_subtree(
+                    child,
+                    child_merkle_depth,
+                    traverse_depth,
+                    &mut *scope_total,
+                    scope,
+                )
             });
 
             ok!(builder.store_reference(child));
@@ -1124,6 +1155,7 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
         cell: Cell,
         merkle_depth: u8,
         traverse_depth: u16,
+        scope_total_new: &mut usize,
         scope: Option<&rayon::Scope<'scope>>,
     ) -> Result<ExtCell, Error> {
         let hash = cell.as_ref().hash(merkle_depth);
@@ -1149,6 +1181,7 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
                         }
                     });
                     let cell = ExtCell::Deferred(promise);
+                    *scope_total_new += 1;
                     entry.insert(cell.clone());
                     cell
                 }
@@ -1156,8 +1189,14 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
             return Ok(cell);
         }
 
-        let cell = ok!(self.run(cell.as_ref(), merkle_depth, traverse_depth + 1, scope));
-        self.new_cells.insert(*hash, cell.clone());
+        let cell = ok!(self.run_inner(
+            cell.as_ref(),
+            merkle_depth,
+            traverse_depth + 1,
+            &mut *scope_total_new,
+            scope
+        ));
+        *scope_total_new += self.new_cells.insert(*hash, cell.clone()).is_none() as usize;
         Ok(cell)
     }
 }
