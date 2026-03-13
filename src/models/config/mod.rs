@@ -1151,6 +1151,12 @@ define_config_params! {
     /// Contains an [`AuthorityMarksConfig`].
     #[serde(transparent)]
     100 => ConfigParam100(AuthorityMarksConfig),
+
+    /// Slasher params.
+    ///
+    /// Contains [`SlasherParamsConfig`]
+    #[serde(transparent)]
+    666 => ConfigParam666(SlasherParamsConfig)
 }
 
 #[cfg(feature = "serde")]

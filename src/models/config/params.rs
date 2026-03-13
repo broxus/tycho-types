@@ -1,6 +1,4 @@
-#[cfg(feature = "tycho")]
-use std::num::NonZeroU8;
-use std::num::{NonZeroU16, NonZeroU32};
+use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 
 use tycho_crypto::ed25519;
 
@@ -1845,6 +1843,17 @@ pub struct AuthorityMarksConfig {
     pub black_mark_id: u32,
     /// White mark extra currency id.
     pub white_mark_id: u32,
+}
+
+/// Slasher configuration.
+#[derive(Debug, Clone, Eq, PartialEq, Store, Load)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[tlb(tag = "#01")]
+pub struct SlasherParamsConfig {
+    /// Slasher address in masterchain
+    pub address: HashBytes,
+    /// Batch size of validators' signatures to be precessed
+    pub batch_size: NonZeroU8,
 }
 
 #[cfg(test)]
