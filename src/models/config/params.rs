@@ -478,6 +478,65 @@ impl GasLimitsPrices {
 
         res.try_into().unwrap_or(u64::MAX).min(Self::MAX_GAS)
     }
+
+    /// Computes gas params for the specified context.
+    pub fn compute_gas_params(&self, args: ComputeGasParams<'_>) -> ComputedGasParams {
+        let gas_max = if args.is_special {
+            self.special_gas_limit
+        } else {
+            self.gas_bought_for(args.account_balance)
+        };
+
+        let gas_limit = if !args.is_tx_ordinary || args.is_special {
+            // May use all gas that can be bought using remaining balance.
+            gas_max
+        } else {
+            // Use only gas bought using remaining message balance.
+            // If the message is "accepted" by the smart contract,
+            // the gas limit will be set to `gas_max`.
+            std::cmp::min(self.gas_bought_for(args.message_balance), gas_max)
+        };
+
+        let gas_credit = if args.is_tx_ordinary && args.is_in_msg_external {
+            // External messages carry no balance,
+            // give them some credit to check whether they are accepted.
+            std::cmp::min(self.gas_credit, gas_max)
+        } else {
+            0
+        };
+
+        ComputedGasParams {
+            max: gas_max,
+            limit: gas_limit,
+            credit: gas_credit,
+        }
+    }
+}
+
+/// An input of [`GasLimitsPrices::compute_gas_params`].
+#[derive(Debug, Clone, Copy)]
+pub struct ComputeGasParams<'a> {
+    /// Account balance in native currency.
+    pub account_balance: &'a Tokens,
+    /// Message balance in native currency.
+    pub message_balance: &'a Tokens,
+    /// Whether the account is present in a fundamental addresses list.
+    pub is_special: bool,
+    /// Whether the gas is computed for an ordinary transaction.
+    pub is_tx_ordinary: bool,
+    /// Whether the received message is external.
+    pub is_in_msg_external: bool,
+}
+
+/// An output of [`GasLimitsPrices::compute_gas_params`].
+#[derive(Debug, Clone, Copy)]
+pub struct ComputedGasParams {
+    /// Maximum possible value of the `limit`.
+    pub max: u64,
+    /// Gas limit for the out-of-gas exception.
+    pub limit: u64,
+    /// Free gas (e.g. for external messages without any balance).
+    pub credit: u64,
 }
 
 impl GasLimitsPrices {
