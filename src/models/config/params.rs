@@ -438,6 +438,12 @@ pub struct GasLimitsPrices {
 }
 
 impl GasLimitsPrices {
+    /// Maximum possible gas value.
+    ///
+    /// There is no real reason for it to not be just `u64::MAX`,
+    /// but for compatibility reasons we have this.
+    pub const MAX_GAS: u64 = i64::MAX as u64;
+
     /// Converts gas units into tokens.
     pub fn compute_gas_fee(&self, gas_used: u64) -> Tokens {
         let mut res = self.flat_gas_price as u128;
@@ -445,6 +451,32 @@ impl GasLimitsPrices {
             res = res.saturating_add(shift_ceil_price(self.gas_price as u128 * extra_gas as u128));
         }
         Tokens::new(res)
+    }
+
+    /// Computes the amount of gas bought for the specified amount of tokens.
+    pub fn gas_bought_for(&self, balance: &Tokens) -> u64 {
+        let balance = balance.into_inner();
+        if balance == 0 || balance < self.flat_gas_price as u128 {
+            return 0;
+        }
+
+        let max_gas_threshold = if self.gas_limit > self.flat_gas_limit {
+            shift_ceil_price(
+                (self.gas_price as u128) * (self.gas_limit - self.flat_gas_limit) as u128,
+            )
+            .saturating_add(self.flat_gas_price as u128)
+        } else {
+            self.flat_gas_price as u128
+        };
+
+        if balance >= max_gas_threshold || self.gas_price == 0 {
+            return self.gas_limit;
+        }
+
+        let mut res = ((balance - self.flat_gas_price as u128) << 16) / (self.gas_price as u128);
+        res = res.saturating_add(self.flat_gas_limit as u128);
+
+        res.try_into().unwrap_or(u64::MAX).min(Self::MAX_GAS)
     }
 }
 
