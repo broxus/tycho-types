@@ -992,17 +992,15 @@ impl<'c, F: FindCell, K> MerkleUpdateApplier<'c, F, K> {
                 if mask.to_byte() & (1 << child_merkle_depth) != 0 {
                     // Use original hash for pruned branches
                     let child_hash = child.hash(mask.level() - 1);
-                    match self.find_cell.find_cell(child_hash) {
-                        Some(cell) => cell,
-                        None => {
-                            if self.find_in_new_cells
-                                && let Some(cell) = self.new_cells.get(child_hash)
-                            {
-                                cell.clone()
-                            } else {
-                                return Err(Error::InvalidData);
-                            }
-                        }
+
+                    if self.find_in_new_cells
+                        && let Some(cell) = self.new_cells.get(child_hash)
+                    {
+                        cell.clone()
+                    } else if let Some(cell) = self.find_cell.find_cell(child_hash) {
+                        cell
+                    } else {
+                        return Err(Error::InvalidData);
                     }
                 } else {
                     match cell.reference_cloned(child_idx) {
@@ -1132,17 +1130,16 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
         if mask.to_byte() & (1 << merkle_depth) != 0 {
             // Use original hash for pruned branches
             let child_hash = cell.as_ref().hash(mask.level() - 1);
+
+            if self.find_in_new_cells
+                && let Some(cell) = self.new_cells.get(child_hash)
+            {
+                return Ok(cell.clone());
+            }
+
             match self.find_cell.find_cell(child_hash) {
-                Some(cell) => Ok(ExtCell::Ordinary(cell.clone())),
-                None => {
-                    if self.find_in_new_cells
-                        && let Some(cell) = self.new_cells.get(child_hash)
-                    {
-                        Ok(cell.clone())
-                    } else {
-                        Err(Error::InvalidData)
-                    }
-                }
+                Some(cell) => Ok(ExtCell::Ordinary(cell)),
+                None => Err(Error::InvalidData),
             }
         } else {
             Ok(ExtCell::Ordinary(cell))
