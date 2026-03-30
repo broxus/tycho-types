@@ -998,6 +998,9 @@ impl<'c, F: FindCell, K> MerkleUpdateApplier<'c, F, K> {
                     {
                         cell.clone()
                     } else if let Some(cell) = self.find_cell.find_cell(child_hash) {
+                        if self.find_in_new_cells {
+                            self.new_cells.insert(K::from_ref(child_hash), cell.clone());
+                        }
                         cell
                     } else {
                         return Err(Error::InvalidData);
@@ -1138,7 +1141,13 @@ impl<F: FindCell + Send + Sync> ParMerkleUpdateApplier<'_, F> {
             }
 
             match self.find_cell.find_cell(child_hash) {
-                Some(cell) => Ok(ExtCell::Ordinary(cell)),
+                Some(cell) => {
+                    if self.find_in_new_cells {
+                        self.new_cells
+                            .insert(*child_hash, ExtCell::Ordinary(cell.clone()));
+                    }
+                    Ok(ExtCell::Ordinary(cell))
+                }
                 None => Err(Error::InvalidData),
             }
         } else {
