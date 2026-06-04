@@ -1031,9 +1031,9 @@ pub struct ConsensusConfig {
     /// **NOTE: Affects overlay id.**
     pub payload_batch_bytes: NonZeroU32,
 
-    /// Free space, previously part of the next too large field
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub _unused: u8,
+    /// Allows leaders to form a chain of anchor proofs and triggers of the given length,
+    /// so that for anchor point A0: trigger A2 acts as a proof for A1, and A1 becomes an anchor too
+    pub sticky_anchors: u8,
 
     /// Limits amount of rounds included in anchor history (points that appears in commit).
     ///

@@ -41,7 +41,7 @@ impl ShardHashes {
         }
 
         for shards in groups.values_mut() {
-            shards.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+            shards.sort_unstable_by_key(|(a, _)| *a);
         }
 
         let mut result = Dict::new();
