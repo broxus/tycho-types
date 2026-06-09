@@ -483,6 +483,10 @@ impl CellImpl for AbsentCell {
         None
     }
 
+    fn reference_repr_hash(&self, _: u8) -> Option<HashBytes> {
+        None
+    }
+
     fn virtualize(&self) -> &DynCell {
         self
     }
