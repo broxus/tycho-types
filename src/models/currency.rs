@@ -312,10 +312,8 @@ impl ExtraCurrencyCollection {
             match ok!(other.0.get(currency_id)) {
                 // Other collection has this currency,
                 // so we must update to the lowest balance.
-                Some(other_balance) => {
-                    if balance > other_balance {
-                        ok!(result.0.set(currency_id, other_balance));
-                    }
+                Some(other_balance) if balance > other_balance => {
+                    ok!(result.0.set(currency_id, other_balance));
                 }
                 // Other collection doesn't have this currency,
                 // and we have a non-zero amount.
@@ -325,7 +323,7 @@ impl ExtraCurrencyCollection {
                 }
                 // Other collection doesn't have this currency,
                 // and we have a zero amount. So we can do nothing.
-                None => {}
+                _ => {}
             }
         }
         Ok(result)

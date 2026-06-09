@@ -1,4 +1,5 @@
 #![warn(missing_docs)]
+#![allow(clippy::question_mark)]
 
 //! Tycho types.
 //!
