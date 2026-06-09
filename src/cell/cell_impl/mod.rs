@@ -437,6 +437,7 @@ impl AbsentCell {
     /// Creates `Self` from the provided cell.
     ///
     /// Creating [`AbsentCell`] from an [`AbsentCell`] gives the same cell.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new<T: AsRef<DynCell>>(cell: T) -> Cell {
         let cell = cell.as_ref();
         let desc = cell.descriptor();
