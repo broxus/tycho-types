@@ -434,11 +434,13 @@ impl BlockSignatureExt for Dict<u16, BlockSignature> {
         let mut weight = 0;
         for value in self.values() {
             let value = ok!(value);
-            if let Some(node) = unique_nodes.get(&value.node_id_short) {
+            if let Some(node) = unique_nodes.remove(&value.node_id_short) {
                 if !node.verify_signature(data, &value.signature) {
                     return Err(Error::InvalidSignature);
                 }
                 weight += node.weight;
+            } else {
+                return Err(Error::InvalidData);
             }
         }
 
