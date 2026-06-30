@@ -467,6 +467,8 @@ impl<'de> Deserialize<'de> for Contract {
             outputs: Vec<NamedAbiType>,
             #[serde(default)]
             id: Option<Id>,
+            #[serde(default, rename = "externalMsg")]
+            external_msg: Option<bool>,
         }
 
         #[derive(Deserialize)]
@@ -522,6 +524,7 @@ impl<'de> Deserialize<'de> for Contract {
                     outputs: Arc::from(item.outputs),
                     input_id,
                     output_id,
+                    external_msg: item.external_msg,
                 })
             })
             .collect();
@@ -669,6 +672,9 @@ pub struct Function {
     pub input_id: u32,
     /// Function id in outgoing messages (with output).
     pub output_id: u32,
+    /// Whether the function can be executed as external message.
+    /// Parsed as `None` for ABI versions before v2.7.
+    pub external_msg: Option<bool>,
 }
 
 impl Function {
@@ -1091,6 +1097,7 @@ pub struct FunctionBuilder {
     inputs: Vec<NamedAbiType>,
     outputs: Vec<NamedAbiType>,
     id: Option<u32>,
+    external_msg: Option<bool>,
 }
 
 impl FunctionBuilder {
@@ -1103,6 +1110,7 @@ impl FunctionBuilder {
             inputs: Default::default(),
             outputs: Default::default(),
             id: None,
+            external_msg: None,
         }
     }
 
@@ -1130,6 +1138,7 @@ impl FunctionBuilder {
             outputs: Arc::from(self.outputs),
             input_id,
             output_id,
+            external_msg: self.external_msg,
         }
     }
 
@@ -1182,6 +1191,12 @@ impl FunctionBuilder {
     /// Sets an explicit function id.
     pub fn with_id(mut self, id: u32) -> Self {
         self.id = Some(id);
+        self
+    }
+
+    /// Sets `externalMsg` function flag.
+    pub fn external_msg(mut self, external_msg: Option<bool>) -> Self {
+        self.external_msg = external_msg;
         self
     }
 }
